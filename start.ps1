@@ -1,5 +1,7 @@
 # Rahul voice assistant (OmniVoice) - Windows launcher (PowerShell equivalent of start.sh).
 # Re-running kills any previous `-m server` and restarts fresh.
+# Runs FOREVER in a supervision loop: streams backend logs live and
+# auto-restarts the server if it crashes or the health check fails.
 # First run creates omnivoice-env (Python 3.11) and installs dependencies.
 $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path -Parent $MyInvocation.MyCommand.Path)
@@ -82,25 +84,84 @@ if (-not (Test-Path $Python)) {
   }
 }
 
-# Restart semantics: always kill the previous server first.
-Stop-OldServer $Port
+# Start one server process; returns the Process object (PID).
+function Start-Server {
+  Stop-OldServer $Port
+  Remove-Item $Log, $LogErr -ErrorAction SilentlyContinue
 
-Remove-Item $Log, $LogErr -ErrorAction SilentlyContinue
-
-Write-Host 'Starting server (model load ~30-60s on first run)...'
-# NB: Windows PowerShell 5.1 Start-Process forbids the same file for both
-# stdout and stderr redirects, so keep separate logs.
-Start-Process -FilePath (Resolve-Path $Python).Path -ArgumentList '-u -m server' `
-  -RedirectStandardOutput $Log -RedirectStandardError $LogErr -WindowStyle Hidden
-
-for ($i = 0; $i -lt 90; $i++) {
-  if (Test-Health) { Write-Host "Server ready - opening $Url"; Start-Process $Url; exit 0 }
-  Start-Sleep 2
+  Write-Host 'Starting server (model load ~30-60s on first run)...'
+  # NB: Windows PowerShell 5.1 Start-Process forbids the same file for both
+  # stdout and stderr redirects, so keep separate logs.
+  return Start-Process -FilePath (Resolve-Path $Python).Path -ArgumentList '-u -m server' `
+    -RedirectStandardOutput $Log -RedirectStandardError $LogErr -WindowStyle Hidden -PassThru
 }
 
-Write-Host 'Server failed to start. Last log lines:' -ForegroundColor Red
-Write-Host "--- $Log (stdout) ---"
-if (Test-Path $Log) { Get-Content $Log -Tail 25 } else { Write-Host '(no stdout log yet)' }
-Write-Host "--- $LogErr (stderr) ---"
-if (Test-Path $LogErr) { Get-Content $LogErr -Tail 25 } else { Write-Host '(no stderr log yet)' }
-exit 1
+# Background tail of both log files -> job output; Receive-Job prints it live.
+function Start-LogTail {
+  Start-Job -ScriptBlock {
+    param($log, $logErr)
+    # -Wait follows the files like `tail -f`; SilentlyContinue covers the
+    # window where a just-restarted server hasn't recreated them yet.
+    Get-Content $log, $logErr -Tail 40 -Wait -ErrorAction SilentlyContinue
+  } -ArgumentList $Log, $LogErr
+}
+
+Write-Host ''
+Write-Host "Supervision loop started - backend logs stream below. Ctrl+C to stop." -ForegroundColor Cyan
+Write-Host "URL: $Url | logs: $Log , $LogErr" -ForegroundColor DarkGray
+Write-Host ''
+
+$restartCount = 0
+while ($true) {
+  $proc = Start-Server
+  $tailJob = Start-LogTail
+
+  # --- wait for first healthy response ---
+  $ready = $false
+  for ($i = 0; $i -lt 90; $i++) {
+    Receive-Job $tailJob | Write-Host   # stream startup logs (model load etc.)
+    if (Test-Health) { $ready = $true; break }
+    if ($proc.HasExited) { break }
+    Start-Sleep 2
+  }
+
+  if (-not $ready) {
+    Write-Host "Server failed to become healthy (restart #$restartCount). Last log lines:" -ForegroundColor Red
+    if (Test-Path $Log)    { Get-Content $Log    -Tail 25 | ForEach-Object { Write-Host "  $_" } }
+    if (Test-Path $LogErr) { Get-Content $LogErr -Tail 25 | ForEach-Object { Write-Host "  $_" } -ForegroundColor Red }
+    Stop-Job $tailJob -ErrorAction SilentlyContinue; Remove-Job $tailJob -Force -ErrorAction SilentlyContinue
+    if ($proc.HasExited) { Write-Host "Server process exited (code $($proc.ExitCode)) - restarting in 5s..." -ForegroundColor Red }
+    Start-Sleep 5
+    continue   # loop: try again
+  }
+
+  Write-Host "Server ready - open $Url in your browser if it didn't open." -ForegroundColor Green
+  Start-Process $Url
+
+  # --- supervision: stream logs live, restart on crash or dead health ---
+  $misses = 0
+  while ($true) {
+    Receive-Job $tailJob | Write-Host   # live backend logs (planner/TTS/WS lines)
+    if ($proc.HasExited) {
+      Write-Host "Server process exited unexpectedly - restarting..." -ForegroundColor Red
+      break
+    }
+    if (Test-Health) {
+      $misses = 0
+    } else {
+      $misses++
+      if ($misses -ge 10) {   # ~30s of dead health with a live process = hung; restart
+        Write-Host "Health check failed 10x - server appears hung - restarting..." -ForegroundColor Red
+        try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch {}
+        break
+      }
+    }
+    Start-Sleep 3
+  }
+
+  $restartCount++
+  Stop-Job $tailJob -ErrorAction SilentlyContinue; Remove-Job $tailJob -Force -ErrorAction SilentlyContinue
+  try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch {}
+  Start-Sleep 2
+  # outer while ($true) restarts the server
+}
