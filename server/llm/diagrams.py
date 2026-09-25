@@ -353,15 +353,19 @@ def generate_for_step(
     With default-allow gating every window calls the planner, so one long
     turn must not open unbounded parallel requests.
     """
+    import logging as _logging
+    _log = _logging.getLogger("voice_api")
     if stop_evt.is_set() or not (step_text or "").strip():
         return None
     if not is_visual_step(step_text):
+        # Short / greeting-only window — nothing to draw. Logged so an empty
+        # board is diagnosable from the terminal instead of a mystery.
+        _log.info("Diagram planner: window %s skipped (non-visual step %d ch)", id_prefix, len((step_text or "").strip()))
         return None
     if not _PLANNER_SEMAPHORE.acquire(blocking=False):
+        _log.info("Diagram planner: window %s skipped (planner busy, 6 parallel)", id_prefix)
         return None
     try:
-        import logging as _logging
-        _log = _logging.getLogger("voice_api")
         # Two budgets: the configured one, then +50% once. Truncated tool
         # JSON (Groq 400 tool_use_failed / finish_reason "length") is the
         # top planner failure in prod — a bigger second attempt usually
@@ -410,7 +414,8 @@ def generate_for_step(
                     arguments = function.get("arguments")
                     break
             if not arguments:
-                return None  # judge decided: nothing drawable this step
+                _log.info("Diagram planner: window %s skipped (judge: nothing drawable) | step=%.60s", id_prefix, (step_text or "").replace("\n", " "))
+                return None
             try:
                 json.loads(arguments)
                 break  # valid JSON — stop retrying
