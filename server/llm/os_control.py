@@ -518,6 +518,9 @@ def plan_os_actions(
             return []
         out = []
         for raw in raw_actions[:MAX_ACTIONS]:
+            # Same trailing-space key quirk as diagram tool calls — strip.
+            if isinstance(raw, dict):
+                raw = {str(k).strip(): v for k, v in raw.items()}
             action = sanitize_action(raw)
             if action:
                 out.append(action)

@@ -11,8 +11,6 @@ import-time side effects, so the package embeds cleanly in any project::
     app = create_app(VoiceConfig.from_env("/data/voice"))
 """
 
-from __future__ import annotations
-
 import asyncio
 import logging
 import os
@@ -20,7 +18,7 @@ import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 log = logging.getLogger("voice_api")
@@ -70,11 +68,14 @@ def create_app(config=None) -> FastAPI:
 
     # FastAPI validates response models from annotations — the factories
     # return un-annotated closures, so wrap with the schema types here.
-    # NOTE: keep the original (request: Request) second arg — FastAPI injects it.
-    def _tts_route_with_request(req: TTSRequest, request):  # type: ignore[no-untyped-def]
+    # NOTE: `request: Request` must be explicitly annotated (not inferred):
+    # an un-annotated second arg makes FastAPI treat it as a query param,
+    # and with PEP 563 string annotations + locally-defined schemas the
+    # model arg degrades to a query param too (every POST 422s).
+    def _tts_route_with_request(req: TTSRequest, request: Request):  # type: ignore[no-untyped-def]
         return tts_handler(req, request)
 
-    def _chat_route(req: ChatRequest, request):  # type: ignore[no-untyped-def]
+    def _chat_route(req: ChatRequest, request: Request):  # type: ignore[no-untyped-def]
         return chat_handler(req, request)
 
     def _vision_route(req: VisionRequest):  # type: ignore[no-untyped-def]
@@ -135,6 +136,18 @@ def create_app(config=None) -> FastAPI:
     asr_routes.register(app, ws_asr=ws_asr_handler)
     vision_routes.register(app, api_vision=_vision_route)
     chat_routes.register(app, chat=_chat_route)
+    from server.routes import fillers as filler_routes
+    from server.speech.fillers import FillerStore
+
+    filler_store = FillerStore(config.filler_dir)
+    app.state.fillers = filler_store
+    filler_routes.register(
+        app,
+        fillers=filler_store,
+        threshold_ms=config.filler_threshold_ms,
+        enabled=config.filler_enabled,
+        mode=config.filler_mode,
+    )
     system_routes.register(
         app,
         health=make_health(services),

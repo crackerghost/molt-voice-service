@@ -136,6 +136,7 @@ class VoiceConfig:
     deepseek_thinking: str = "disabled"
     deepseek_reasoning_effort: str = ""
     diagram_enabled: bool = True
+    diagram_plan_mode: str = "turn"  # turn = 1 rich board/turn; window = 1 small board/window
     diagram_model: str = ""
     diagram_max_tokens: int = 1000
     os_director_enabled: bool = True
@@ -156,6 +157,16 @@ class VoiceConfig:
     # web dir (built UI); empty path = skip static mount
     web_dir: Path = field(default_factory=lambda: Path("web/ui/dist"))
     serve_ui: bool = True
+    # filler maskers (pre-generated cloned-voice wavs masking LLM+TTS latency)
+    filler_dir: Path = field(default_factory=lambda: Path("assets/fillers"))
+    filler_enabled: bool = True
+    filler_threshold_ms: int = 500
+    filler_mode: str = "slow"  # always | slow | off
+    # cheap smart pick: parallel qwen call (~100ms) choosing the clip per
+    # turn; falls back to random on timeout/failure, never blocks voice
+    filler_pick_enabled: bool = True
+    filler_pick_model: str = "qwen/qwen3.8-27b"
+    filler_pick_timeout_s: float = 0.3
 
     @classmethod
     def from_env(cls, root: Path | str = ".") -> "VoiceConfig":
@@ -198,6 +209,13 @@ class VoiceConfig:
                 for o in raw_origins.replace(";", ",").split(",")
                 if o.strip()
             ) or ("*",)
+        try:
+            filler_pick_timeout_s = float(os.environ.get("VOICE_FILLER_PICK_TIMEOUT_S", "0.3") or 0.3)
+        except ValueError:
+            filler_pick_timeout_s = 0.3
+        _plan_mode = os.environ.get("DIAGRAM_PLAN_MODE", "turn").strip().lower() or "turn"
+        if _plan_mode not in ("turn", "window"):
+            _plan_mode = "turn"
         return cls(
             root=root,
             host=os.environ.get("VOICE_HOST", "127.0.0.1"),
@@ -244,6 +262,7 @@ class VoiceConfig:
             deepseek_thinking=thinking,
             deepseek_reasoning_effort=effort,
             diagram_enabled=os.environ.get("DIAGRAM_EVENTS", "1") == "1",
+    diagram_plan_mode=_plan_mode,
             diagram_model=os.environ.get("DIAGRAM_MODEL", "").strip() or llm_model,
             diagram_max_tokens=int(os.environ.get("DIAGRAM_MAX_TOKENS", "1000")),
             os_director_enabled=os.environ.get("OS_DIRECTOR_EVENTS", "1") == "1",
@@ -261,6 +280,20 @@ class VoiceConfig:
             screen_routing_mode=os.environ.get("VOICE_SCREEN_ROUTING", "auto").strip().lower(),
             web_dir=web_dir,
             serve_ui=os.environ.get("VOICE_SERVE_UI", "1") != "0",
+            filler_dir=_resolve_path(
+                os.environ.get("VOICE_FILLER_DIR", "assets/fillers"), root
+            ),
+            filler_enabled=os.environ.get("VOICE_FILLER_ENABLED", "1") != "0",
+            filler_threshold_ms=int(os.environ.get("VOICE_FILLER_THRESHOLD_MS", "500")),
+            filler_mode=(
+                os.environ.get("VOICE_FILLER_MODE", "slow").strip().lower() or "slow"
+            ),
+            filler_pick_enabled=os.environ.get("VOICE_FILLER_PICK", "1") != "0",
+            filler_pick_model=(
+                os.environ.get("VOICE_FILLER_PICK_MODEL", "qwen/qwen3.8-27b").strip()
+                or "qwen/qwen3.8-27b"
+            ),
+            filler_pick_timeout_s=filler_pick_timeout_s,
         )
 
     def torch_dtype(self):

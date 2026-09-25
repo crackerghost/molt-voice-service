@@ -126,13 +126,11 @@ def should_generate(text: str, history: list[dict] | None, enabled: bool) -> boo
     return True
 
 
-def _step_prompt(step_text: str, topic: str, tag: str = "w") -> list[dict]:
-    return [
-        {
-            "role": "system",
-            "content": (
-                "You are a visual teaching assistant drawing ONE step of an explanation "
-                "on a shared whiteboard. DEFAULT TO DRAWING: any explanation with "
+def _step_prompt(step_text: str, topic: str, tag: str = "w", whole: bool = False) -> list[dict]:
+    limit = 1500 if whole else 600
+    system = (
+        "You are a visual teaching assistant drawing ONE step of an explanation "
+        "on a shared whiteboard. DEFAULT TO DRAWING: any explanation with "
                 "parts, steps, sequence, cause-effect, comparison, timeline, "
                 "hierarchy, a system, a definition with 2+ components, or how "
                 "something works deserves a board — processes, frontend/backend/"
@@ -151,7 +149,7 @@ def _step_prompt(step_text: str, topic: str, tag: str = "w") -> list[dict]:
                 "when the step WRAPS UP or summarizes, 'Takeaways: • a • b • c' "
                 "(max 3 short bullets) with a trigger from the spoken summary "
                 "words. CONTINUITY: this is ONE step of a longer explanation — "
-                "draw ONLY this step's new idea (1-3 nodes). NEVER redraw "
+                "draw ONLY this step's new idea (3-6 nodes). NEVER redraw "
                 "parent or overview nodes from earlier steps; repeats are "
                 "dropped and leave the board emptier. ORDER elements in the "
                 "exact order the step speaks them, so each shape appears the "
@@ -209,10 +207,37 @@ def _step_prompt(step_text: str, topic: str, tag: str = "w") -> list[dict]:
                 "ONLY id, type, content fields — never x/y. Shapes: "
                 "rectangle = component/step/part, ellipse = start/end/entity/outcome, "
                 "diamond = decision/branch/comparison, text = free annotation, arrow = flow."
-            ),
-        },
-        {"role": "user", "content": f"TAG: {tag}\nTOPIC: {topic[:200]}\nSTEP: {step_text[:600]}"},
+    )
+    if whole:
+        system = system.replace(
+            "drawing ONE step of an explanation",
+            "drawing the FULL board for one complete explanation",
+        ).replace(
+            "tool call for THIS step only, mixing whatever explains best: "
+            "3-6 compact nodes with arrows",
+            "tool call covering the WHOLE explanation below, mixing whatever explains best: "
+            "6-10 compact nodes with arrows",
+        ).replace(
+            "CONTINUITY: this is ONE step of a longer explanation — "
+            "draw ONLY this step's new idea (3-6 nodes). NEVER redraw "
+            "parent or overview nodes from earlier steps; repeats are "
+            "dropped and leave the board emptier.",
+            "COVERAGE: this is the WHOLE reply — draw every part, step and "
+            "example it teaches (6-10 nodes). One board only, no repeats.",
+        ).replace(
+            "ORDER elements in the "
+            "exact order the step speaks them, so each shape appears the "
+            "moment its words are spoken.",
+            "ORDER elements in the "
+            "exact order the explanation speaks them, so each shape appears the "
+            "moment its words are spoken.",
+        )
+    user_label = "FULL REPLY" if whole else "STEP"
+    msgs = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": f"TAG: {tag}\nTOPIC: {topic[:200]}\n{user_label}: {step_text[:limit]}"},
     ]
+    return msgs
 
 
 # Production policy: DEFAULT-ALLOW. Any explaining counts as drawable until
@@ -310,6 +335,7 @@ def generate_for_step(
     id_prefix: str = "w",
     thinking: dict | None = None,
     turn_id: str = "",
+    whole: bool = False,
 ) -> dict | None:
     """Watcher planner: one small board delta for ONE spoken window.
 
@@ -345,7 +371,7 @@ def generate_for_step(
         for attempt, budget in enumerate(budgets):
             payload = {
                 "model": model,
-                "messages": _step_prompt(step_text, topic, id_prefix),
+                "messages": _step_prompt(step_text, topic, id_prefix, whole=whole),
                 "tools": [DIAGRAM_TOOL],
                 "tool_choice": "auto",
                 "temperature": 0,
@@ -715,6 +741,9 @@ def normalize(raw: object) -> dict | None:
     for item in raw["elements"][:DIAGRAM_MAX_ELEMENTS]:
         if not isinstance(item, dict):
             continue
+        # Some models (qwen tool calls) emit keys with stray whitespace
+        # ("type " instead of "type") — strip keys or every element drops.
+        item = {str(k).strip(): v for k, v in item.items()}
         item_id = str(item.get("id", "")).strip()[:80]
         item_type = str(item.get("type", "")).strip()
         if not item_id or item_id in seen or item_type not in allowed:

@@ -219,6 +219,8 @@ def chat_worker(
     threading.Thread(target=audio_synth, daemon=True).start()
 
     win_seq = [0]
+    turn_texts: list[str] = []  # whole-turn board plan: 1 rich call/turn
+    plan_mode = getattr(cfg, "diagram_plan_mode", "turn") or "turn"
 
     def _diagram_watch(n: int, win_text: str, raw_text: str = "") -> None:
         try:
@@ -249,7 +251,9 @@ def chat_worker(
         win_seq[0] += 1
         n = win_seq[0]
         win_q.put({"text": win_text, "steps": steps, "n": n})
-        if watch and diagram_ctx:
+        if (win_text or "").strip():
+            turn_texts.append(win_text.strip())
+        if watch and diagram_ctx and plan_mode == "window":
             threading.Thread(target=_diagram_watch, args=(n, win_text, raw_text), daemon=True).start()
 
     def _os_director() -> None:
@@ -362,6 +366,41 @@ def chat_worker(
         if window and not (stop_evt is not None and stop_evt.is_set()):
             steps = min(num_step, cfg.first_window_step) if not emitted_audio else num_step
             _ship_window(" ".join(window), steps, raw_text=_take_raw())
+        # Whole-turn board: ONE rich planner call on the full reply, fired
+        # while audio still drains so its ~1s hides inside playback.
+        turn_plan: dict = {}
+        turn_thread = None
+        if (
+            diagram_ctx
+            and plan_mode == "turn"
+            and not llm_error
+            and not (stop_evt is not None and stop_evt.is_set())
+        ):
+            def _turn_diagram() -> None:
+                try:
+                    if stop_evt is not None and stop_evt.is_set():
+                        return
+                    full = " ".join(turn_texts).strip()
+                    if len(full) < 40:
+                        return
+                    d = deps.diagram_generate(
+                        diagram_ctx["key"], full[:1500], diagram_ctx.get("topic", ""),
+                        stop_evt, client=http_client, url=diagram_ctx.get("diagram_url") or cfg_url,
+                        model=diagram_ctx.get("diagram_model") or cfg_diagram_model,
+                        max_tokens=cfg.diagram_max_tokens,
+                        thinking=diagram_ctx.get("diagram_thinking"),
+                        id_prefix="t", turn_id=diagram_ctx.get("turn_id", ""),
+                        whole=True,
+                    )
+                    if d and not (stop_evt is not None and stop_evt.is_set()):
+                        turn_plan["d"] = d
+                        _labels = [str(e.get("text", "") or e.get("code", "") or e.get("type", ""))[:28] for e in d["elements"] if e.get("type") != "arrow"][:6]
+                        log.info("Diagram turn-plan -> %d element(s) [%s]", len(d["elements"]), " | ".join(_labels))
+                except Exception as e:  # noqa: BLE001 — board must never break voice
+                    log.warning("Diagram turn-plan skipped: %s", e)
+
+            turn_thread = threading.Thread(target=_turn_diagram, daemon=True)
+            turn_thread.start()
         win_q.put(None)
         audio_done.wait(timeout=180)
         if llm_error and not emitted_audio:
@@ -371,6 +410,16 @@ def chat_worker(
             "TTS total: %d window(s), %.2fs audio in %.2fs gen (avg RTF %.2f) | first audio %.2fs after request",
             timing["windows"], timing["total_dur"], timing["total_gen"], rtf, timing["first_audio"],
         )
+        if turn_thread is not None:
+            turn_thread.join(timeout=10)
+            d = turn_plan.get("d")
+            if d and not (stop_evt is not None and stop_evt.is_set()):
+                out_q.put(("diagram", {
+                    "window_n": win_seq[0], "mode": "append",
+                    "elements": d["elements"],
+                    "turn_id": diagram_ctx.get("turn_id", ""),
+                    "client_turn_id": diagram_ctx.get("client_turn_id", ""),
+                }))
         out_q.put(("done", {"first_audio": round(timing["first_audio"], 2), "rtf": round(rtf, 2)}))
     except Exception as e:  # noqa: BLE001 — report to the client
         log.exception("WS chat synthesis failed")

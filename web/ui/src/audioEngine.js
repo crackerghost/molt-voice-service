@@ -9,11 +9,6 @@ let micStream = null;
 let micSrc = null;
 let tap = null;
 let speakConnected = false;
-// Persistent capture tap for Molt-as-media-peer: every TTS buffer source is
-// fanned out here so the room voice layer can publish Molt's voice (SFU
-// "molt" producer or mesh mic-mix) without touching playback.
-let speakDest = null;
-let speakMuted = false;
 
 function ensureNodes() {
   if (!speakAnalyser) speakAnalyser = ctx.createAnalyser();
@@ -64,10 +59,6 @@ export const engine = {
   connectSpeak(source) {
     if (!speakAnalyser) return;
     source.connect(speakAnalyser);
-    if (!speakDest) {
-      speakDest = ctx.createMediaStreamDestination();
-      speakAnalyser.connect(speakDest);
-    }
     if (!speakConnected) {
       speakAnalyser.connect(ctx.destination);
       speakConnected = true;
@@ -75,30 +66,6 @@ export const engine = {
   },
   readSpeak() {
     return read(speakAnalyser);
-  },
-  /* Live capture track of Molt's voice (silence when idle). Null until unlock. */
-  getSpeakTrack() {
-    const track = speakDest?.stream?.getAudioTracks?.()[0] || null;
-    return track && track.readyState === "live" ? track : null;
-  },
-  /* Local-only mute: silences Molt on my speakers. The capture tap stays fed
-     (readSpeak + room publish keep working); callers stop publishing separately. */
-  setSpeakMuted(muted) {
-    speakMuted = Boolean(muted);
-    if (!speakAnalyser || !ctx) return;
-    try { speakAnalyser.disconnect(); } catch { /* noop */ }
-    if (speakDest) {
-      try { speakAnalyser.connect(speakDest); } catch { /* noop */ }
-    }
-    if (!speakMuted) {
-      try { speakAnalyser.connect(ctx.destination); } catch { /* noop */ }
-      speakConnected = true;
-    } else {
-      speakConnected = false;
-    }
-  },
-  get speakMuted() {
-    return speakMuted;
   },
   async startMic() {
     try {
