@@ -394,6 +394,17 @@ def chat_worker(
                     )
                     if d and not (stop_evt is not None and stop_evt.is_set()):
                         turn_plan["d"] = d
+                        # Emit straight onto out_q (exactly once — the post-join
+                        # block below only waits). A result landing BEFORE done
+                        # rides the normal sender order; one landing AFTER done
+                        # is caught by the socket's grace drain instead of dying
+                        # in this abandoned queue with the board left empty.
+                        out_q.put(("diagram", {
+                            "window_n": win_seq[0], "mode": "append",
+                            "elements": d["elements"],
+                            "turn_id": diagram_ctx.get("turn_id", ""),
+                            "client_turn_id": diagram_ctx.get("client_turn_id", ""),
+                        }))
                         _labels = [str(e.get("text", "") or e.get("code", "") or e.get("type", ""))[:28] for e in d["elements"] if e.get("type") != "arrow"][:6]
                         log.info("Diagram turn-plan -> %d element(s) [%s]", len(d["elements"]), " | ".join(_labels))
                 except Exception as e:  # noqa: BLE001 — board must never break voice
@@ -411,15 +422,10 @@ def chat_worker(
             timing["windows"], timing["total_dur"], timing["total_gen"], rtf, timing["first_audio"],
         )
         if turn_thread is not None:
+            # Wait for the turn board (up to 10s) so chalk normally lands
+            # BEFORE done. The turn thread already emitted onto out_q itself;
+            # anything slower is forwarded by the socket's grace drain.
             turn_thread.join(timeout=10)
-            d = turn_plan.get("d")
-            if d and not (stop_evt is not None and stop_evt.is_set()):
-                out_q.put(("diagram", {
-                    "window_n": win_seq[0], "mode": "append",
-                    "elements": d["elements"],
-                    "turn_id": diagram_ctx.get("turn_id", ""),
-                    "client_turn_id": diagram_ctx.get("client_turn_id", ""),
-                }))
         out_q.put(("done", {"first_audio": round(timing["first_audio"], 2), "rtf": round(rtf, 2)}))
     except Exception as e:  # noqa: BLE001 — report to the client
         log.exception("WS chat synthesis failed")
