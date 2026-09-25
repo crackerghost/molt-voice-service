@@ -1,0 +1,70 @@
+# ============================================================
+# Voice_Cloning — Python dependencies
+# Install fresh in a virtualenv, per-platform (see README.md):
+#   uv venv --python 3.11 omnivoice-env
+#   uv pip install -r requirements.txt
+# NOTE: `torch` is intentionally unversioned so an existing
+# CUDA/MPS build on the host (e.g. Kaggle's preinstalled torch)
+# is left untouched. On a bare machine, plain `pip install torch`
+# pulls the CUDA-enabled wheel on Linux/Windows and the MPS build
+# on Apple Silicon.
+# ============================================================
+
+# --- Core: OmniVoice zero-shot voice-cloning TTS (k2-fsa) ---
+omnivoice>=0.2
+
+torch
+torchaudio
+
+# --- Web server (FastAPI + uvicorn + WebSockets) ---
+fastapi>=0.110
+uvicorn[standard]
+httpx
+python-multipart
+
+# --- Audio I/O + DSP (runtime, clean_voice.py, trim_voice.py) ---
+numpy
+soundfile
+scipy
+noisereduce
+
+# --- Voice-input ASR backend (/ws/asr streaming transcription) ---
+# Silero VAD: server-side neural speech/non-speech classifier — the noise-proof
+# turn-taker (fan/door/keyboard noise can no longer open phantom utterances).
+# `ASR_VAD_MODE=auto` uses it when installed, else the browser energy VAD.
+silero-vad>=5.0
+# OCR/VAD runtime: CUDA build on Linux (Kaggle — ~10x faster screen OCR),
+# CPU build elsewhere. Same import name, one of the two installs per platform.
+onnxruntime; sys_platform != "linux"
+# PINNED: 1.22.x is the last onnxruntime-gpu built for CUDA 12.x — the latest
+# (1.23+) is built for CUDA 13 and CRASHES on Kaggle's CUDA 12 image with
+# "libcublasLt.so.13: cannot open shared object file", silently falling back
+# to CPU (slow OCR). Needs cuDNN 9 (Kaggle's image ships it).
+onnxruntime-gpu==1.22.0; sys_platform == "linux"
+# Speaker-verification gate: enrolls the primary speaker's voiceprint from
+# VOICE_REF_AUDIO and drops utterances from anyone else (competing voices,
+# phone videos in the background). MIT-licensed; auto-disables if absent.
+resemblyzer>=0.1.4
+# faster-whisper runs on every platform (CUDA on Kaggle/NVIDIA GPUs, CPU
+# elsewhere). mlx-whisper is the Apple Silicon Neural-Engine backend (~10x
+# faster than CPU Whisper on M-series) and is installed ONLY on macOS arm64 —
+# the environment marker keeps Kaggle/Linux installs from trying to pull it.
+faster-whisper>=1.0
+mlx-whisper>=0.4,<1; sys_platform == "darwin" and platform_machine == "arm64"
+
+# --- Screen understanding: fast OCR text layer (inline in the reply path) ---
+# RapidOCR runs on onnxruntime (~100-300 ms/frame) — keeps on-screen text
+# (errors, code, file names, terminal output) fresh every turn. Optional:
+# without it the VLM summary alone still works.
+rapidocr-onnxruntime>=1.3
+
+# --- Screen understanding: LOCAL Qwen2.5-VL-3B (VISION_BACKEND=local/auto) ---
+# Only needed for the in-process vision engine (the Kaggle path — no API key).
+# VISION_BACKEND=api skips these entirely. transformers >= 4.49 ships the
+# Qwen2.5-VL architecture; accelerate is required by fp16 low-mem loading.
+transformers>=4.49
+pillow
+accelerate
+# 4-bit weight loading (VISION_LOCAL_4BIT=1) — ~2x faster background describes
+# on T4-class GPUs. Linux-only marker: Kaggle/CUDA gets it, macOS skips it.
+bitsandbytes>=0.43; sys_platform == "linux"

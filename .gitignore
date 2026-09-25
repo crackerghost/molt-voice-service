@@ -1,0 +1,30 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+omnivoice-env/
+
+# ===== Secrets / local config =====
+.env
+.env.local
+
+# ===== Personal voice samples + generated audio =====
+# my_voice*.wav contain your recorded voice — keep them out of git.
+# Drop your own my_voice.wav (3-10 s clean clip) after cloning.
+*.wav
+
+# ===== Node / UI build (rebuild with: cd web/ui && npm run build) =====
+node_modules/
+web/ui/node_modules/
+web/ui/dist/
+
+# ===== OS / editor / misc =====
+.DS_Store
+Thumbs.db
+*.log
+nohup.out
+.ipynb_checkpoints/
+kaggle/.cache/
+/.freebuff
+/.vite
