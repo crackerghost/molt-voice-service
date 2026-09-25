@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import queue
 import threading
 import time
@@ -24,6 +25,12 @@ import uuid
 from fastapi import WebSocket, WebSocketDisconnect
 
 log = logging.getLogger("voice_api")
+
+# Planners lag TTS: chalk for the last windows is often still being drawn
+# when the audio finishes. Grace seconds after `done` to forward trailing
+# diagram deltas instead of abandoning them with the turn queue (which left
+# the board empty despite "board par dekho"). 0 disables.
+_DONE_GRACE_S = max(0.0, float(os.environ.get("DIAGRAM_DONE_GRACE_S", "6") or 6))
 
 
 def make_ws_tts(services):
@@ -416,6 +423,38 @@ def make_ws_tts(services):
                                 extra = payload if isinstance(payload, dict) else {}
                                 log.info("WS chat done: %d frame(s) in %.2fs | first audio %.2fs | TTS RTF %.2f",
                                          frames, elapsed, extra.get("first_audio", 0), extra.get("rtf", 0))
+                                # Grace drain: forward trailing chalk before closing
+                                # the turn (see _DONE_GRACE_S). Late planner deltas
+                                # otherwise die in the abandoned queue.
+                                if _DONE_GRACE_S > 0 and not (stop_evt is not None and stop_evt.is_set()):
+                                    running_loop = asyncio.get_running_loop()
+
+                                    def _grab(timeout_s):
+                                        try:
+                                            return out_q.get(True, timeout_s)
+                                        except queue.Empty:
+                                            return (None, None)
+
+                                    grace_until = time.monotonic() + _DONE_GRACE_S
+                                    while True:
+                                        remaining = grace_until - time.monotonic()
+                                        if remaining <= 0:
+                                            break
+                                        kind2, payload2 = await running_loop.run_in_executor(None, _grab, remaining)
+                                        if kind2 is None:
+                                            break  # timeout — no more chalk coming
+                                        if kind2 == "diagram":
+                                            await websocket.send_text(json.dumps({"type": "diagram", **payload2}))
+                                            continue
+                                        if kind2 == "done":
+                                            break
+                                        if kind2 == "error":
+                                            await websocket.send_text(json.dumps({"type": "error", "message": payload2}))
+                                            break
+                                        if kind2 == "text":
+                                            await websocket.send_text(json.dumps({"type": "text", "text": payload2}))
+                                            continue
+                                        # window/audio/os_action after done: ignore, keep draining
                                 await websocket.send_text(json.dumps({
                                     "type": "done", "frames": frames, "elapsed": elapsed,
                                     "first_audio": extra.get("first_audio", 0), "rtf": extra.get("rtf", 0),
