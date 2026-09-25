@@ -193,6 +193,37 @@ def wants_os_action(text: str) -> bool:
     return bool(_OS_REQUEST_RE.search(clean))
 
 
+# Teaching words also live in _OS_REQUEST_RE (a lesson may still want the
+# code editor / browser opened, so the blocking fast-path keeps them), but
+# they must NOT suppress the board: "HTML सिखाओ" IS the lesson the Green
+# Board is for. Only pure desktop moves ("notes kholo", "browser kholo")
+# suppress diagram generation (the ack reply teaches nothing).
+_TEACHING_RE = re.compile(
+    r"(कोर्स|लेसन|पाठ्यक्रम|पढ़ा|सिखा|ट्यूटर|"
+    r"\bcourse\b|\blesson\b|\btutor\b|\bteach\b|\bstart\s*(course|lesson)\b)",
+    re.IGNORECASE,
+)
+
+
+def wants_desktop_move(text: str) -> bool:
+    """Narrow gate for diagram suppression: True only when the turn asks for
+    a desktop/window move with no teaching request attached.
+
+    Teaching words are stripped before matching, so "React lesson shuru karo"
+    (lesson request -> needs the board) returns False while "notes kholo"
+    (window move -> ack reply needs no board) returns True. Compound turns
+    ("browser kholo aur HTML sikhao") still match via the remaining
+    desktop words and stay suppressed — the opened app owns the screen.
+    """
+    clean = (text or "").strip()
+    if len(clean) < 8:
+        return False
+    if _DEFINITION_RE.search(clean):
+        return False
+    stripped = _TEACHING_RE.sub(" ", clean)
+    return bool(_OS_REQUEST_RE.search(stripped))
+
+
 # Subset gate: the turn wants the agent to WRITE code (bigger director token
 # budget + same blocking narration as other desktop moves).
 _CODE_WRITE_RE = re.compile(

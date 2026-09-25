@@ -11,7 +11,8 @@ from unittest.mock import patch
 
 from server.chat import pipeline as _pipeline  # noqa: F401 (import must not explode)
 from server.config import VoiceConfig
-from server.llm.diagrams import _step_prompt, generate_for_step, normalize
+from server.llm.diagrams import _step_prompt, generate_for_step, normalize, should_generate
+from server.llm.os_control import wants_desktop_move, wants_os_action
 
 
 class KeyStripTests(unittest.TestCase):
@@ -75,6 +76,38 @@ class PlannerGuardTests(unittest.TestCase):
         self.assertIsNone(generate_for_step(
             "key", "some teaching step about html head and body", "topic",
             evt, client=None, url="http://127.0.0.1:1/", model="m"))
+
+
+class GateTests(unittest.TestCase):
+    def test_teaching_turns_get_board(self):
+        with patch.dict(os.environ, {"DIAGRAM_GATE": "auto"}, clear=False):
+            for t in ("HTML सिखाओ", "पेंटिंग बनाना सिखाओ",
+                      "React lesson shuru karo", "flexbox samjhao"):
+                self.assertTrue(should_generate(t, [], True), t)
+        for t in ("HTML सिखाओ", "पेंटिंग बनाना सिखाओ",
+                  "React lesson shuru karo", "flexbox samjhao"):
+            self.assertFalse(wants_desktop_move(t), t)
+
+    def test_desktop_moves_suppress_board(self):
+        for t in ("नोट्स खोलो", "browser kholo aur youtube dikhao"):
+            self.assertTrue(wants_desktop_move(t), t)
+            self.assertFalse(should_generate(t, [], True), t)
+
+    def test_explicit_draw_wins_over_desktop_words(self):
+        # ASR emits Devanagari: बोर्ड पर दिखाओ carries दिखाओ intent and must
+        # draw even though "board" is a desktop word.
+        self.assertTrue(should_generate("बोर्ड पर दिखाओ", [], True))
+        self.assertTrue(should_generate("draw a diagram of computer", [], True))
+
+    def test_greetings_and_smalltalk_still_skipped(self):
+        for t in ("hii", "namaste", "heasds"):
+            self.assertFalse(should_generate(t, [], True), t)
+
+    def test_blocking_fast_path_unchanged_for_lessons(self):
+        # Lessons still reach the OS director (may open code/browser);
+        # only the diagram suppression narrowed.
+        self.assertTrue(wants_os_action("React lesson shuru karo"))
+        self.assertTrue(wants_os_action("नोट्स खोलो"))
 
 
 if __name__ == "__main__":

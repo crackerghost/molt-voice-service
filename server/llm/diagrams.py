@@ -109,16 +109,19 @@ def should_generate(text: str, history: list[dict] | None, enabled: bool) -> boo
     # OS-control turns ("open notes", "browser kholo") must never draw:
     # the ack reply ("notes open kar diya...") is not a lesson, and any
     # board delta would yank the green board over the app the user asked
-    # for. Lazy import: os_control imports this module's greeting regex.
+    # for. Teaching requests ("HTML सिखाओ", "start lesson") are NOT desktop
+    # moves — they ARE the lesson, so wants_desktop_move lets them through.
+    # Lazy import: os_control imports this module's greeting regex.
+    # Explicit draw ask always wins — checked BEFORE the desktop suppression
+    # so "board par dikhao" still draws.
+    if DIAGRAM_INTENT_RE.search(clean_text):
+        return True
     try:
-        from server.llm.os_control import wants_os_action as _wants_os
-        if _wants_os(clean_text):
+        from server.llm.os_control import wants_desktop_move as _wants_desktop
+        if _wants_desktop(clean_text):
             return False
     except Exception:  # noqa: BLE001 — gate must never break
         pass
-    # Explicit ask always wins (no LLM judgement needed to trigger).
-    if DIAGRAM_INTENT_RE.search(clean_text):
-        return True
     import os as _os
     if _os.environ.get("DIAGRAM_GATE", "auto").strip().lower() == "explicit":
         return False
