@@ -12,6 +12,7 @@ import NotchHUD from "./os/NotchHUD.jsx";
 import AppWindow from "./os/AppWindow.jsx";
 import ErrorBoundary from "./os/ErrorBoundary.jsx";
 import { engine } from "./audioEngine.js";
+import { prefetchFillers, pickFillerBuffer, fillerReady } from "./fillers.js";
 import { chatMessage, pingMessage, stopMessage } from "./services/ttsProtocol.js";
 import { STUDENT, COURSE, COURSES, INITIAL_PROGRESS, getLessonById, getCourseById } from "./data/courseData.js";
 
@@ -45,6 +46,7 @@ const CFG = {
   vadRecActiveMs: 400, // recognizer counts as active within this window
   asrVadMode: "auto", // "server" = Silero VAD on the server owns turn-taking (noise-proof)
   bargeIdleMs: 900, // recognizer-idle safety-net send delay
+  fillerThresholdMs: 500, // no first audio in this long -> play a random filler masker
   visionEnabled: false, // server has a vision engine ready (screen understanding)
   pushMode: true, // push-to-see: hold the button, auto-send on release (SCREEN_PUSH_MODE)
   pushMaxMs: 5000, // hold longer than this -> auto-send anyway
@@ -71,6 +73,7 @@ const mergeCfg = (c) => {
   CFG.vadRecActiveMs = num(c.vad_rec_active_ms, CFG.vadRecActiveMs);
   CFG.asrVadMode = c.asr_vad_mode || CFG.asrVadMode;
   CFG.bargeIdleMs = num(c.barge_idle_ms, CFG.bargeIdleMs);
+  CFG.fillerThresholdMs = num(c.filler_threshold_ms, CFG.fillerThresholdMs);
   CFG.specChat = c.spec_chat !== undefined ? !!c.spec_chat : CFG.specChat; // live tunable
   CFG.visionEnabled = c.vision_enabled !== undefined ? !!c.vision_enabled : CFG.visionEnabled;
   CFG.pushMode = c.screen_push_mode !== undefined ? !!c.screen_push_mode : CFG.pushMode;
@@ -463,6 +466,16 @@ export default function App() {
   const turnStartRef = useRef(0); // browser-side: when the current turn was submitted (first-audio stopwatch)
   const activeTurnIdRef = useRef(0);
   const acceptedOsTurnRef = useRef(null); // turn id whose pre-start agent moves are valid
+  // Filler masker: random "theek hai, ruko" clip if first audio is slow (>400ms).
+  const fillerTimerRef = useRef(0);
+  const fillerSourceRef = useRef(null);
+  const fillerPlayingRef = useRef(false);
+  const cancelFillerTimer = () => {
+    if (fillerTimerRef.current) {
+      clearTimeout(fillerTimerRef.current);
+      fillerTimerRef.current = 0;
+    }
+  };
   const diagramTurnRef = useRef(null);
   const diagramQueueRef = useRef([]); // staged board deltas for smooth step-by-step draw
   const diagramTimerRef = useRef(0);
@@ -961,12 +974,73 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [playBuf, flushDiagramsUpTo]);
 
+  /* ---- filler masker: if the first real frame is slow, play a prefetched
+     cloned-voice "theek hai, ruko" clip at random (shuffle-bag, never repeats
+     back-to-back). Real audio queues behind it and plays right after — the
+     reply feels instant even when the LLM+TTS takes seconds. ---- */
+  const playFiller = useCallback(() => {
+    if (dropRef.current || fillerPlayingRef.current) return;
+    if (framesRef.current > 0) return; // real audio already here — no mask needed
+    if (!fillerReady()) return;
+    const buf = pickFillerBuffer();
+    if (!buf) return;
+    try {
+      const ctx = engine.unlock();
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      engine.connectSpeak(src);
+      fillerSourceRef.current = src;
+      fillerPlayingRef.current = true;
+      if (!speakingRef.current) {
+        speakingRef.current = true;
+        setSpeaking(true);
+      }
+      console.info("[filler] playing masker while reply generates");
+      src.onended = () => {
+        if (fillerSourceRef.current === src) fillerSourceRef.current = null;
+        fillerPlayingRef.current = false;
+        if (dropRef.current) return;
+        // Real audio arrived during the filler — take a short breath (~250ms)
+        // so the reply starts after a natural beat, never cut instantly.
+        if (pendingRef.current.length > 0 && !currentSourceRef.current) {
+          setTimeout(() => {
+            if (dropRef.current || currentSourceRef.current) return;
+            if (pendingRef.current.length > 0) {
+              drainRestartRef.current = false;
+              speakingRef.current = true;
+              setSpeaking(true);
+              drain();
+            }
+          }, 250);
+        }
+      };
+      src.start();
+    } catch {
+      fillerPlayingRef.current = false;
+      fillerSourceRef.current = null;
+    }
+  }, [drain]);
+
+  // Prefetch filler clips once (zero-latency playback later).
+  useEffect(() => {
+    prefetchFillers(() => engine.unlock());
+  }, []);
+
   /* ---- hard stop: instant audio cut + server cancel (barge-in) ---- */
   const hardStop = useCallback(() => {
     dropRef.current = true; // drop stale frames/text until the next "start"
     acceptedOsTurnRef.current = null; // pre-start agent moves need a fresh submit
     drainRestartRef.current = false;
     drainStartedRef.current = false;
+    cancelFillerTimer();
+    fillerPlayingRef.current = false;
+    if (fillerSourceRef.current) {
+      try {
+        fillerSourceRef.current.stop();
+      } catch { /* noop */ }
+      try { fillerSourceRef.current.disconnect(); } catch { /* noop */ }
+      fillerSourceRef.current = null;
+    }
     if (currentSourceRef.current) {
       try {
         currentSourceRef.current.stop();
@@ -1438,8 +1512,14 @@ export default function App() {
           })(),
         },
       }));
+      // Filler masker: if no real audio in 400ms, play a random "ruko" clip.
+      cancelFillerTimer();
+      fillerTimerRef.current = setTimeout(() => {
+        fillerTimerRef.current = 0;
+        playFiller();
+      }, CFG.fillerThresholdMs ?? 500);
     },
-    [hardStop, activeApp, openApps, minApps, snaps, browserUrl, browserTabs, notes, activeNoteId, steps.length, activeCourseId, activeLessonId, completedLessonIds]
+    [hardStop, activeApp, openApps, minApps, snaps, browserUrl, browserTabs, notes, activeNoteId, steps.length, activeCourseId, activeLessonId, completedLessonIds, playFiller]
   );
 
   /* Push-to-see turn: text + the frame captured during the hold. */
@@ -1647,6 +1727,7 @@ export default function App() {
             // in the caption draws NOW (caption == speech clock).
             try { matchWaiting(); } catch { /* board must never break voice */ }
           } else if (m.type === "error") {
+            cancelFillerTimer();
             if (assistantTextRef.current) pushHistory("assistant", assistantTextRef.current);
             assistantTextRef.current = "";
             openAssistantId.current = null;
@@ -1664,6 +1745,7 @@ export default function App() {
             showError("Speech error: " + m.message);
             setTurnActive(false);
           } else if (m.type === "done") {
+            cancelFillerTimer();
             if (dropRef.current) {
               // closing done of the reply we interrupted — discard silently
               openAssistantId.current = null;
@@ -1695,8 +1777,9 @@ export default function App() {
             setTurnActive(false); // stream over — Speaking label now follows playback only
             // Reply stream is complete — if the jitter buffer is still holding
             // frames (never reached jitterFrames), start playback NOW so the
-            // tail isn't stranded silent until the next turn.
-            if (!speakingRef.current && pendingRef.current.length > 0) {
+            // tail isn't stranded silent until the next turn. A playing filler
+            // owns the output — its onended kicks drain instead.
+            if (!speakingRef.current && pendingRef.current.length > 0 && !fillerPlayingRef.current) {
               speakingRef.current = true;
               api.setSpeaking(true);
               drain();
@@ -1710,10 +1793,13 @@ export default function App() {
         } else {
           if (dropRef.current) return; // stale audio frame of an aborted reply
           framesRef.current += 1;
-          if (framesRef.current === 1 && turnStartRef.current) {
-            console.info(
-              `[voice] first audio received ${(performance.now() - turnStartRef.current).toFixed(0)}ms after submit (browser-measured, incl. network)`,
-            );
+          if (framesRef.current === 1) {
+            cancelFillerTimer(); // real audio beat the masker — no filler needed
+            if (turnStartRef.current) {
+              console.info(
+                `[voice] first audio received ${(performance.now() - turnStartRef.current).toFixed(0)}ms after submit (browser-measured, incl. network)`,
+              );
+            }
           }
           pendingRef.current.push(new Blob([ev.data], { type: "audio/wav" }));
           // Pair this blob with its TTS window number (WS order is preserved:
@@ -1731,11 +1817,15 @@ export default function App() {
           // playback runs dry before window #2 is generated (RTF > 1 on
           // MPS/CPU) — heard as mid-word cutoffs. Wait until jitterFrames
           // are queued, or the reply stream ends (done/error), to start.
+          // A filler masker playing takes precedence — real audio queues
+          // behind it and starts when it ends (playFiller onended kicks drain).
           const wantStart =
-            CFG.jitterFrames <= 0 ||
-            pendingRef.current.length >= CFG.jitterFrames ||
-            drainRestartRef.current ||
-            !activeRef.current;
+            !fillerPlayingRef.current && (
+              CFG.jitterFrames <= 0 ||
+              pendingRef.current.length >= CFG.jitterFrames ||
+              drainRestartRef.current ||
+              !activeRef.current
+            );
           if (!speakingRef.current && wantStart) {
             drainRestartRef.current = false;
             speakingRef.current = true;

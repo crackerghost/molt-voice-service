@@ -45,7 +45,7 @@ def make_ws_tts(services):
         _LLM_PERSONA_CUSTOM,
         _screen_system_prompt,
     )
-    from server.llm.providers import resolve_llm
+    from server.llm.providers import groq_api_key, resolve_llm
     from server.screen.context import (
         SCREEN_PENDING_TMPL,
         recent_screen_block,
@@ -55,6 +55,7 @@ def make_ws_tts(services):
 
     cfg = services.config
     pipeline = services.pipeline
+    from server.speech import filler_pick as filler_picker
 
     async def ws_tts(websocket: WebSocket):
         await websocket.accept()
@@ -312,6 +313,83 @@ def make_ws_tts(services):
 
                         await websocket.send_text(json.dumps({"type": "start", "sample_rate": cfg.sample_rate, "text": text}))
                         frames = 0
+                        # Filler masker: a random pre-generated "ruko" clip goes out FIRST
+                        # on every chat turn, so any client (bundled UI or external)
+                        # plays something instantly while the LLM+TTS catches up.
+                        # mode=slow: only if no real frame within threshold_ms.
+                        filler_mode = (getattr(cfg, "filler_mode", "always") or "always").strip().lower()
+                        filler_store = getattr(websocket.app.state, "fillers", None)
+                        # Cheap smart pick: qwen (~100ms) chooses the clip in
+                        # PARALLEL with the main turn — never serial, never blocking.
+                        # Falls back to random on timeout/failure.
+                        filler_pick_future = None
+                        if (
+                            getattr(cfg, "filler_pick_enabled", True)
+                            and getattr(cfg, "filler_enabled", True)
+                            and filler_mode != "off"
+                            and filler_store
+                            and len(filler_store) > 1
+                        ):
+                            try:
+                                _pick_key = groq_api_key()
+                                _pick_names = filler_store.names()
+                                _pick_timeout = max(0.05, float(getattr(cfg, "filler_pick_timeout_s", 0.3)))
+                                if _pick_key and _pick_names:
+                                    filler_pick_future = asyncio.get_running_loop().run_in_executor(
+                                        None,
+                                        lambda: filler_picker.pick_name(
+                                            text,
+                                            _pick_names,
+                                            key=_pick_key,
+                                            url=cfg.llm_url,
+                                            model=getattr(cfg, "filler_pick_model", "qwen/qwen3.8-27b"),
+                                            timeout_s=_pick_timeout + 1.0,
+                                        ),
+                                    )
+                            except Exception as exc:  # noqa: BLE001 — random fallback below
+                                log.info("filler smart pick not started (%s)", exc)
+                                filler_pick_future = None
+
+                        async def _send_filler() -> bool:
+                            if stop_evt.is_set():
+                                return False
+                            clip = None
+                            if filler_pick_future is not None:
+                                try:
+                                    name = await asyncio.wait_for(
+                                        filler_pick_future,
+                                        timeout=max(0.05, float(getattr(cfg, "filler_pick_timeout_s", 0.3))),
+                                    )
+                                    if name:
+                                        clip = filler_store.get(name)
+                                    if clip is not None:
+                                        filler_store.mark_played(clip)
+                                except Exception as exc:  # noqa: BLE001 — timeout/failure: random below
+                                    log.info("filler smart pick fallback (%s)", type(exc).__name__)
+                                    clip = None
+                            if clip is None:
+                                clip = filler_store.pick_random() if filler_store else None
+                            if clip is None:
+                                return False
+                            try:
+                                await websocket.send_text(json.dumps({"type": "filler", "name": clip["name"]}))
+                                await websocket.send_bytes(clip["bytes"])
+                            except Exception:
+                                stop_evt.set()
+                                return False
+                            log.info("WS chat filler [%s] sent first (%.2fs)", clip["name"], clip.get("duration_s") or 0)
+                            return True
+
+                        filler_task = None
+                        if getattr(cfg, "filler_enabled", True) and filler_mode != "off" and filler_store:
+                            if filler_mode == "slow":
+                                async def _slow_filler() -> None:
+                                    await asyncio.sleep(getattr(cfg, "filler_threshold_ms", 400) / 1000.0)
+                                    if frames == 0 and not stop_evt.is_set():
+                                        await _send_filler()
+                                filler_task = asyncio.create_task(_slow_filler())
+                            else:  # always
+                                await _send_filler()
                         while True:
                             kind, payload = await asyncio.get_running_loop().run_in_executor(None, out_q.get)
                             if kind == "text":
@@ -347,6 +425,10 @@ def make_ws_tts(services):
                                 log.error("WS chat error: %s", payload)
                                 await websocket.send_text(json.dumps({"type": "error", "message": payload}))
                                 break
+                    if filler_task is not None and not filler_task.done():
+                        filler_task.cancel()
+                    if filler_pick_future is not None and not filler_pick_future.done():
+                        filler_pick_future.cancel()
                     busy[0] = False
                     continue
 

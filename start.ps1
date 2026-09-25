@@ -1,0 +1,106 @@
+# Rahul voice assistant (OmniVoice) - Windows launcher (PowerShell equivalent of start.sh).
+# Re-running kills any previous `-m server` and restarts fresh.
+# First run creates omnivoice-env (Python 3.11) and installs dependencies.
+$ErrorActionPreference = 'Stop'
+Set-Location (Split-Path -Parent $MyInvocation.MyCommand.Path)
+
+# --- port from .env (VOICE_PORT=...), default 8000 ---
+$Port = '8000'
+if (Test-Path '.env') {
+  $m = Get-Content '.env' | Select-String '^VOICE_PORT=' | Select-Object -First 1
+  if ($m) { $Port = $m.ToString().Split('=', 2)[1].Trim().Trim('"') }
+}
+$Url = "http://127.0.0.1:$Port"
+$Log = Join-Path $env:TEMP 'voice-api.log'
+$LogErr = Join-Path $env:TEMP 'voice-api.err.log'
+$Python = '.\omnivoice-env\Scripts\python.exe'
+
+# Classic HTTP for HF weights (hf_xet stalls); quiet the symlink warning.
+$env:HF_HUB_DISABLE_XET = '1'
+$env:HF_HUB_DISABLE_SYMLINKS_WARNING = '1'
+
+function Test-Health {
+  try { (Invoke-WebRequest -Uri "$Url/health" -TimeoutSec 3 -UseBasicParsing).StatusCode -eq 200 }
+  catch { $false }
+}
+
+function Test-PortBusy([int]$p) {
+  [bool](Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue)
+}
+
+function Stop-OldServer([int]$p) {
+  $killed = $false
+  # 1) Any previous `-m server` (venv python or stray uv-shim python).
+  try {
+    $srv = Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
+      Where-Object { $_.CommandLine -like '*-m server*' }
+    foreach ($proc in $srv) {
+      Write-Host "Stopping old server (PID $($proc.ProcessId))..."
+      try { Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue; $killed = $true } catch {}
+    }
+  } catch {}
+  # 2) Anything else squatting on our port.
+  try {
+    $conns = Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue
+    foreach ($c in $conns) {
+      if ($c.OwningProcess -and $c.OwningProcess -ne $PID) {
+        Write-Host "Freeing port $p (PID $($c.OwningProcess))..."
+        try { Stop-Process -Id $c.OwningProcess -Force -ErrorAction SilentlyContinue; $killed = $true } catch {}
+      }
+    }
+  } catch {}
+  if ($killed) {
+    for ($i = 0; $i -lt 20; $i++) {
+      if (-not (Test-PortBusy $p)) { break }
+      Start-Sleep 1
+    }
+  }
+  if (Test-PortBusy $p) {
+    Write-Error "Port $p is still busy after kill attempt - free it manually."
+    exit 1
+  }
+}
+
+# --- first run: venv + deps (mirrors start.sh; resemblyzer is optional) ---
+if (-not (Test-Path $Python)) {
+  Write-Host 'First run - creating omnivoice-env (Python 3.11) and installing deps...'
+  if (Get-Command uv -ErrorAction SilentlyContinue) {
+    uv python install 3.11
+    uv venv --python 3.11 omnivoice-env
+    # resemblyzer needs C++ Build Tools on Windows; without it the
+    # speaker gate auto-disables, so fall back to a filtered install.
+    uv pip install --python $Python -r requirements.txt 2>$null
+    if ($LASTEXITCODE -ne 0) {
+      Write-Host 'Full install failed (likely webrtcvad/C++ tools) - retrying without resemblyzer...'
+      Get-Content requirements.txt | Where-Object { $_ -notmatch 'resemblyzer' } | Set-Content requirements.win.txt
+      uv pip install --python $Python -r requirements.win.txt
+    }
+  } else {
+    py -3.11 -m venv omnivoice-env
+    & $Python -m pip install --upgrade pip
+    & $Python -m pip install -r requirements.txt
+  }
+}
+
+# Restart semantics: always kill the previous server first.
+Stop-OldServer $Port
+
+Remove-Item $Log, $LogErr -ErrorAction SilentlyContinue
+
+Write-Host 'Starting server (model load ~30-60s on first run)...'
+# NB: Windows PowerShell 5.1 Start-Process forbids the same file for both
+# stdout and stderr redirects, so keep separate logs.
+Start-Process -FilePath (Resolve-Path $Python).Path -ArgumentList '-u -m server' `
+  -RedirectStandardOutput $Log -RedirectStandardError $LogErr -WindowStyle Hidden
+
+for ($i = 0; $i -lt 90; $i++) {
+  if (Test-Health) { Write-Host "Server ready - opening $Url"; Start-Process $Url; exit 0 }
+  Start-Sleep 2
+}
+
+Write-Host 'Server failed to start. Last log lines:' -ForegroundColor Red
+Write-Host "--- $Log (stdout) ---"
+if (Test-Path $Log) { Get-Content $Log -Tail 25 } else { Write-Host '(no stdout log yet)' }
+Write-Host "--- $LogErr (stderr) ---"
+if (Test-Path $LogErr) { Get-Content $LogErr -Tail 25 } else { Write-Host '(no stderr log yet)' }
+exit 1

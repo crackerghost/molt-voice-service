@@ -124,6 +124,9 @@ def make_api_config(services):
             "speak_tail_ms": int(_os.environ.get("VOICE_SPEAK_TAIL_MS", "700")),
             "vad_rec_active_ms": int(_os.environ.get("VOICE_VAD_REC_ACTIVE_MS", "400")),
             "barge_idle_ms": int(_os.environ.get("VOICE_BARGE_IDLE_MS", "900")),
+            "filler_enabled": _os.environ.get("VOICE_FILLER_ENABLED", "1") != "0",
+            "filler_threshold_ms": int(_os.environ.get("VOICE_FILLER_THRESHOLD_MS", "500")),
+            "filler_mode": (_os.environ.get("VOICE_FILLER_MODE", "slow").strip().lower() or "slow"),
         }
 
     return api_config
