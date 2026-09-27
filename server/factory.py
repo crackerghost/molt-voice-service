@@ -35,6 +35,16 @@ def create_app(config=None) -> FastAPI:
         here = Path(__file__).resolve().parent.parent
         load_dotenv(here / ".env")
         config = VoiceConfig.from_env(here)
+    try:
+        import subprocess as _sp
+        _rev = _sp.check_output(["git", "rev-parse", "--short", "HEAD"],
+                                cwd=Path(__file__).resolve().parent.parent,
+                                stderr=_sp.DEVNULL, timeout=5).decode().strip()
+    except Exception:
+        _rev = "unknown"
+    log.info("voice-service build %s | llm=%s | diagrams=%s/%s inline=%s", _rev, config.llm_model,
+             config.diagram_model, getattr(config, "diagram_plan_mode", "turn"),
+             getattr(config, "diagram_inline", False))
     services = build_services(config)
 
     from server.api import (
