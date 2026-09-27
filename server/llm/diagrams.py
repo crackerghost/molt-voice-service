@@ -34,7 +34,7 @@ DIAGRAM_TOOL = {
     "type": "function",
     "function": {
         "name": "draw_flowchart_or_diagram",
-        "description": "Render concise concept nodes, comparison tables, quiz checks, notes, code snippets, and connecting arrows on the whiteboard.",
+            "description": "Render concise concept nodes (rectangles, ellipses, diamonds, triangles for peaks/roofs), comparison tables, quiz checks, notes, code snippets, and connecting arrows on the whiteboard.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -45,7 +45,7 @@ DIAGRAM_TOOL = {
                         "type": "object",
                         "properties": {
                             "id": {"type": "string"},
-                            "type": {"type": "string", "enum": ["rectangle", "ellipse", "diamond", "text", "arrow", "code", "note", "table", "quiz", "html"]},
+                            "type": {"type": "string", "enum": ["rectangle", "ellipse", "diamond", "triangle", "text", "arrow", "code", "note", "table", "quiz", "html"]},
                             "x": {"type": "number"},
                             "y": {"type": "number"},
                             "width": {"type": "number"},
@@ -204,7 +204,7 @@ def _step_prompt(step_text: str, topic: str, tag: str = "w", whole: bool = False
                 "links, NO event handlers — pure HTML + inline CSS; anything "
                 "executable is stripped and the visual is dropped if empty. "
                 "Max ONE html per step. "
-                "Every rectangle/ellipse/diamond MUST carry non-empty "
+                "Every rectangle/ellipse/diamond/triangle MUST carry non-empty "
                 "text naming the concrete thing from the STEP (tag names, file names, "
                 "exact terms — never blank labels). Language rule: the BOARD is "
                 "always ENGLISH — short English labels, code/tag/ "
@@ -220,7 +220,28 @@ def _step_prompt(step_text: str, topic: str, tag: str = "w", whole: bool = False
                 "startNodeId, endNodeId — never x/y on arrows; code/note/table/quiz/html give "
                 "ONLY id, type, content fields — never x/y. Shapes: "
                 "rectangle = component/step/part, ellipse = start/end/entity/outcome, "
-                "diamond = decision/branch/comparison, text = free annotation, arrow = flow."
+                "diamond = decision/branch/comparison, triangle = peak/apex/roof/top-of-hierarchy "
+                "(pyramid top, warning apex, house roof), text = free annotation, arrow = flow. "
+                "SHAPE RECIPES (compose, never single-box a concrete thing): CIRCLE = ellipse "
+                "with a 1-2 word label (sizing makes short labels round). HOUSE = one triangle "
+                "(roof, label the house name) stacked directly above one rectangle (body, label "
+                "its rooms/features) — emit roof FIRST so it draws top-down. BROWSER = rectangle "
+                "url-bar above a viewport rectangle. PAGE = stacked section rectangles. PYRAMID / "
+                "hierarchy = triangle apex node with arrows down to rectangle layers. CYCLE = 3-4 "
+                "ellipses in a ring with arrows looping back to the first. TIMELINE = small "
+                "rectangles left-to-right with arrows chaining forward. PERSON / ROLE = ellipse "
+                "(head-like) above its responsibility rectangles. PLANT / TREE = ellipse canopy "
+                "above a rectangle trunk. MAP / JOURNEY = ellipse landmarks with arrows as the "
+                "route. ARROW DESIGN: one arrow per relationship, always forward in spoken order "
+                "(earlier node -> later node), startNodeId/endNodeId ONLY, never cross the VS "
+                "divider, never loop back except true cycles, max one arrow between the same pair. "
+                "ARROWS explain cause ('leads to'), sequence ('then'), or part-whole ('has-a'); "
+                "every arrow gets an arrowLabel of 1-2 spoken words when the step says a linking "
+                "word ('makes', 'gives', 'needs'). EXAMPLES-FIRST: every definition or concept "
+                "node earns ONE sibling example node (tone=example, label like 'e.g. h1 = big title') "
+                "drawn right after it — a board that only names things without showing one teaches "
+                "nothing. A step teaching 2+ facts ends with ONE takeaway note ('Takeaways: a/b/c'). "
+                "Mistakes the step warns about become warn-tone diamonds, never buried in labels."
     )
     if whole:
         system = system.replace(
@@ -499,7 +520,7 @@ def generate_for_step(
                if it["type"] == "arrow"
                or str(it.get("text", "")).strip()
                or (it["type"] == "code" and str(it.get("code", "")).strip())]
-        keep = {it["id"] for it in out if it["type"] in {"rectangle", "ellipse", "diamond", "text"}}
+        keep = {it["id"] for it in out if it["type"] in {"rectangle", "ellipse", "diamond", "triangle", "text"}}
         out = [it for it in out
                if it["type"] != "arrow"
                or (it.get("startNodeId") in keep and it.get("endNodeId") in keep)]
@@ -510,7 +531,7 @@ def generate_for_step(
             out = [it for it in out
                    if it["type"] != "arrow"
                    or side_of.get(it.get("startNodeId")) == side_of.get(it.get("endNodeId"))]
-        if not any(it["type"] in {"rectangle", "ellipse", "diamond", "text", "code", "note", "table", "quiz", "html"} for it in out):
+        if not any(it["type"] in {"rectangle", "ellipse", "diamond", "triangle", "text", "code", "note", "table", "quiz", "html"} for it in out):
             return None
         # Deterministic binary-tree layout (model coordinates are NOT trusted —
         # prod boards showed boxes piled on top of each other, then one
@@ -613,7 +634,7 @@ def _node_size(item):
     label = str(item.get("text", ""))
     if item["type"] == "text":
         return max(200, min(560, 90 + 7.5 * len(label))), 32
-    return max(220, min(460, 140 + 7 * len(label))), (72 if item["type"] == "diamond" else 64)
+    return max(220, min(460, 140 + 7 * len(label))), (72 if item["type"] in ("diamond", "triangle") else 64)
 
 
 def _place(item, x, y):
@@ -626,7 +647,7 @@ def _place(item, x, y):
 
 def _layout_board(out):
     """Position every shape + recompute every arrow. Mutates and returns out."""
-    shapes = [it for it in out if it["type"] in {"rectangle", "ellipse", "diamond", "text"}]
+    shapes = [it for it in out if it["type"] in {"rectangle", "ellipse", "diamond", "triangle", "text"}]
     left = [s for s in shapes if s.get("side") == "left"]
     right = [s for s in shapes if s.get("side") == "right"]
     center = [s for s in shapes if not s.get("side")]
@@ -711,7 +732,7 @@ def _dedupe_turn(turn_id: str, out: list[dict]) -> list[dict]:
                 _TURN_LABELS.pop(next(iter(_TURN_LABELS)))
         fresh = []
         for it in out:
-            if it["type"] in {"rectangle", "ellipse", "diamond", "text"}:
+            if it["type"] in {"rectangle", "ellipse", "diamond", "triangle", "text"}:
                 k = _label_key(it.get("text", ""))
                 if k and k in seen:
                     continue
@@ -758,7 +779,7 @@ def _turn_shift(turn_id: str, out: list[dict]) -> None:
     or when the window holds no shapes."""
     if not turn_id:
         return
-    shapes = [it for it in out if it["type"] in {"rectangle", "ellipse", "diamond", "text"}]
+    shapes = [it for it in out if it["type"] in {"rectangle", "ellipse", "diamond", "triangle", "text"}]
     if not shapes:
         return
     block_bottom = max(it["y"] + it["height"] for it in shapes)
@@ -771,14 +792,14 @@ def _turn_shift(turn_id: str, out: list[dict]) -> None:
     if not dy:
         return
     for it in out:
-        if it["type"] in {"rectangle", "ellipse", "diamond", "text", "arrow"}:
+        if it["type"] in {"rectangle", "ellipse", "diamond", "triangle", "text", "arrow"}:
             it["y"] = max(-2000, min(6000, it["y"] + dy))
 
 
 def normalize(raw: object) -> dict | None:
     if not isinstance(raw, dict) or not isinstance(raw.get("elements"), list):
         return None
-    allowed = {"rectangle", "ellipse", "diamond", "text", "arrow", "code", "note", "table", "quiz", "html"}
+    allowed = {"rectangle", "ellipse", "diamond", "triangle", "text", "arrow", "code", "note", "table", "quiz", "html"}
     elements = []
     seen = set()
     for item in raw["elements"][:DIAGRAM_MAX_ELEMENTS]:
@@ -803,7 +824,7 @@ def normalize(raw: object) -> dict | None:
                 normalized[key] = max(40, min(600, float(item.get(key, default))))
             except (TypeError, ValueError):
                 normalized[key] = default
-        if item_type in {"rectangle", "ellipse", "diamond", "text", "code", "note", "table", "quiz", "html"}:
+        if item_type in {"rectangle", "ellipse", "diamond", "triangle", "text", "code", "note", "table", "quiz", "html"}:
             # Recap notes hold 3 short bullets — roomier cap so takeaways fit.
             cap = 600 if item_type == "code" else (420 if item_type == "note" else DIAGRAM_MAX_TEXT)
             normalized["text"] = _board_text(item.get("text", ""))[:cap]
@@ -886,7 +907,7 @@ def normalize(raw: object) -> dict | None:
     boxes = {
         item["id"]: (item["x"], item["y"], item["width"], item["height"])
         for item in elements
-        if item["type"] in {"rectangle", "ellipse", "diamond", "text"} and str(item.get("text", "")).strip()
+        if item["type"] in {"rectangle", "ellipse", "diamond", "triangle", "text"} and str(item.get("text", "")).strip()
     }
     for item in elements:
         # Arrow geometry is computed HERE from the endpoint boxes — never
