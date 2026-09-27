@@ -141,7 +141,7 @@ class VoiceConfig:
     deepseek_reasoning_effort: str = ""
     diagram_enabled: bool = True
     diagram_plan_mode: str = "turn"  # turn = 1 rich board/turn; window = 1 small board/window
-    diagram_inline: bool = True  # single brain: the answer call itself draws (sidecar planners become fallback only)
+    diagram_inline: bool = False  # single brain (answer draws itself); off = sidecar planners from the reply text
     diagram_model: str = ""
     diagram_max_tokens: int = 1000
     os_director_enabled: bool = True
@@ -268,7 +268,7 @@ class VoiceConfig:
             deepseek_reasoning_effort=effort,
             diagram_enabled=os.environ.get("DIAGRAM_EVENTS", "1") == "1",
     diagram_plan_mode=_plan_mode,
-            diagram_inline=os.environ.get("DIAGRAM_INLINE", "1") == "1",
+            diagram_inline=os.environ.get("DIAGRAM_INLINE", "0") == "1",
             diagram_model=os.environ.get("DIAGRAM_MODEL", "").strip() or llm_model,
             diagram_max_tokens=int(os.environ.get("DIAGRAM_MAX_TOKENS", "1000")),
             os_director_enabled=os.environ.get("OS_DIRECTOR_EVENTS", "1") == "1",

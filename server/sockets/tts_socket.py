@@ -313,7 +313,7 @@ def make_ws_tts(services):
                         # Single brain: when this turn may draw, the answer call
                         # itself carries the draw tool — words and visuals come
                         # from one decision-maker and can never disagree.
-                        inline_board = bool(should_diagram) and bool(getattr(cfg, "diagram_inline", True))
+                        inline_board = bool(should_diagram) and bool(getattr(cfg, "diagram_inline", False))
                         if inline_board:
                             log.info("WS chat request: inline board on (single brain)")
                         threading.Thread(
