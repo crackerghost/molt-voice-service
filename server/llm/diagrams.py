@@ -26,6 +26,7 @@ _PACE_GAP_S = max(0.0, float(__import__("os").environ.get("DIAGRAM_PACE_GAP_S", 
 DEVANAGARI_RE = re.compile(r"[\u0900-\u097F]+")
 DIAGRAM_INTENT_RE = re.compile(
     r"(?:draw|diagram|flowchart|visuali[sz]e|mind\s*map|architecture|timeline|process|relationship|"
+    r"explain|describe|structure|samjhao|samjha|batayo|kya\s*hai|kaise|कैसे|क्या\s*है|"
     r"चित्र|डायग्राम|फ्लोचार्ट|दिखाओ|समझाने के लिए|तुलना|टाइमलाइन|प्रोसेस)",
     re.IGNORECASE,
 )
