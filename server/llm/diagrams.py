@@ -3,6 +3,7 @@
 import json
 import re
 import threading
+import time
 
 DIAGRAM_MAX_ELEMENTS = 40
 DIAGRAM_MAX_TEXT = 180
@@ -11,6 +12,16 @@ DIAGRAM_MAX_TEXT = 180
 # beyond this the step is skipped (best-effort — voice is unaffected).
 _MAX_PARALLEL_PLANNERS = 6
 _PLANNER_SEMAPHORE = threading.Semaphore(_MAX_PARALLEL_PLANNERS)
+# Pace gate: free/dev tiers enforce a strict TPM shared by every planner
+# call (~2.5k tokens each). Four concurrent calls spend a whole minute's
+# budget in one second and the burst self-429s no matter how long each
+# waits (the window rolls with usage). Serializing planner calls a few
+# seconds apart keeps every call inside the budget — and matches speech:
+# each TTS window plays ~5-8s, so the chalk for a window lands while that
+# sentence is still being spoken. Real-time board, zero 429s.
+_PACE_LOCK = threading.Lock()
+_PACE_LAST = 0.0
+_PACE_GAP_S = max(0.0, float(__import__("os").environ.get("DIAGRAM_PACE_GAP_S", "3.5")))
 # Board text is English-only. Devanagari is voice-only.
 DEVANAGARI_RE = re.compile(r"[\u0900-\u097F]+")
 DIAGRAM_INTENT_RE = re.compile(
@@ -368,6 +379,15 @@ def generate_for_step(
     if not _PLANNER_SEMAPHORE.acquire(blocking=False):
         _log.info("Diagram planner: window %s skipped (planner busy, 6 parallel)", id_prefix)
         return None
+    # Pace gate: hold this window's call until its slot (DIAGRAM_PACE_GAP_S
+    # after the previous planner call). Sidecar thread — voice never waits.
+    global _PACE_LAST
+    if _PACE_GAP_S > 0:
+        with _PACE_LOCK:
+            wait_s = _PACE_LAST + _PACE_GAP_S - time.monotonic()
+            if wait_s > 0:
+                time.sleep(wait_s)
+            _PACE_LAST = time.monotonic()
     try:
         # Two budgets: the configured one, then +50% once. Truncated tool
         # JSON (Groq 400 tool_use_failed / finish_reason "length") is the
@@ -389,11 +409,26 @@ def generate_for_step(
             # Deliberately no reasoning_effort: see docstring.
             response = None
             try:
-                response = client.post(
-                    url,
-                    headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                    json=payload,
-                )
+                # 429 wait-and-retry: the sidecar planner shares the tier's TPM
+                # with the voice LLM, so bursts get rejected with a Retry-After.
+                # Waiting out that window is free — this thread is a daemon
+                # sidecar, voice NEVER waits on it. Two waits max, then drop
+                # the window (best-effort) instead of burning the whole turn.
+                for wait in range(3):
+                    response = client.post(
+                        url,
+                        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                        json=payload,
+                    )
+                    if response.status_code != 429:
+                        break
+                    try:
+                        retry_s = min(30.0, float(response.headers.get("retry-after", "")) )
+                    except (TypeError, ValueError):
+                        retry_s = 6.0 * (wait + 1)
+                    retry_s = max(retry_s, 1.0)
+                    _log.info("Diagram planner: window %s 429, waiting %.1fs (attempt %d/3)", id_prefix, retry_s, wait + 1)
+                    time.sleep(retry_s)
                 response.raise_for_status()
             except Exception as e:
                 try:
