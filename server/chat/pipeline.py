@@ -158,7 +158,11 @@ def chat_worker(
         try:
             # Inline boards share the answer call, so they need headroom for
             # board JSON on top of the speech budget (teaching turns only).
-            tok_budget = cfg.llm_max_tokens + (cfg.diagram_max_tokens if inline_board else 0)
+            # +500 spare: the model's hidden reasoning plus a full tool payload
+            # must never eat the spoken words — content starves last and an
+            # empty-text turn plays the mishearing fallback.
+            extra = (cfg.diagram_max_tokens + 500) if inline_board else 0
+            tok_budget = cfg.llm_max_tokens + extra
             stream_kw: dict = {}
             if inline_board:
                 from server.llm.diagrams import DIAGRAM_TOOL as _INLINE_TOOL
