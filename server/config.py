@@ -38,6 +38,10 @@ def load_dotenv(path: Path) -> None:
             continue
         key, _, value = line.partition("=")
         key = key.strip()
+        # Tolerate `export KEY=V` shell-style lines (otherwise the key lands as
+        # "export KEY" and the real var silently never loads).
+        if key.lower().startswith("export "):
+            key = key[7:].strip()
         raw = value.strip()
         if raw[:1] in ('"', "'"):
             q = raw[0]
