@@ -421,7 +421,15 @@ def chat_worker(
                 producer_stop.set()
                 break
         if (not emitted_text or (llm_error and not emitted_audio)) and not (stop_evt is not None and stop_evt.is_set()):
-            fallback = "अरे, आवाज़ साफ़ नहीं आ पाई। एक बार फिर से बोल दो।"
+            if inline_count[0] > 0:
+                # The brain drew but barely spoke — claiming "we didn't hear
+                # you" would be a lie (we heard fine). Narrate the board that
+                # actually landed instead.
+                log.warning("Turn spoke nothing but drew %d inline board(s) — narrating board, not mishearing",
+                            inline_count[0])
+                fallback = "बोर्ड पर बना दिया है, ये देखो।"
+            else:
+                fallback = "अरे, आवाज़ साफ़ नहीं आ पाई। एक बार फिर से बोल दो।"
             out_q.put(("text", fallback))
             _ship_window(fallback, min(num_step, cfg.first_window_step), watch=False)
             emitted_audio = True
