@@ -149,6 +149,7 @@ def chat_worker(
     # brain — words and visuals can never disagree). Drained per window.
     tool_sink_q: queue.Queue = queue.Queue()
     inline_count = [0]
+    inline_labels: list[str] = []
     llm_error: list[str] = []
     audio_done = threading.Event()
     producer_stop = threading.Event()
@@ -271,6 +272,48 @@ def chat_worker(
         except Exception:
             return False
 
+    def _narrate_board() -> str:
+        """One short spoken pass over what was just drawn (thin-speech rescue).
+
+        Non-streaming, no tools, tiny budget — runs only when the answer drew
+        but barely spoke, so voice + board always land together.
+        """
+        try:
+            labels = ", ".join(inline_labels[:8]) or "the diagram"
+            topic = ""
+            try:
+                topic = str((diagram_ctx or {}).get("topic", ""))[:120]
+            except Exception:
+                topic = ""
+            resp = http_client.post(
+                cfg_url,
+                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                json={
+                    "model": cfg_model,
+                    "messages": [
+                        {"role": "system", "content": (
+                            "तुम साथी ट्यूटर हो। बोर्ड पर ये आकृतियाँ अभी बनी हैं: "
+                            f"{labels}। इनके बारे में सिर्फ २ छोटे बोले-जाने वाले वाक्य लिखो "
+                            "(पूरी देवनागरी, रोज़मर्रा हिंग्लिश), बोर्ड की तरफ इशारा करते हुए। "
+                            "सिर्फ वाक्य लिखो, कोई टूल मत चलाओ।"
+                        )},
+                        {"role": "user", "content": f"टॉपिक: {topic}. बोर्ड पर क्या बना है, ये २ वाक्यों में बोलकर समझाओ।"},
+                    ],
+                    "temperature": 0.6,
+                    "max_tokens": 120,
+                },
+                timeout=30,
+            )
+            resp.raise_for_status()
+            text = (resp.json().get("choices") or [{}])[0].get("message", {}).get("content") or ""
+            clean = " ".join(str(text).split()).strip()[:400]
+            if clean:
+                log.info("Narrated silent board: %.80s", clean)
+            return clean
+        except Exception as e:  # noqa: BLE001 — narration is a bonus, never break voice
+            log.warning("Board narration skipped: %s", e)
+            return ""
+
     def _drain_inline(n: int) -> None:
         """Emit the main answer's own draw-tool calls as this window's board.
 
@@ -304,6 +347,12 @@ def chat_worker(
                 "client_turn_id": diagram_ctx.get("client_turn_id", ""),
             }))
             inline_count[0] += 1
+            for e in board["elements"]:
+                if e.get("type") == "arrow":
+                    continue
+                label = str(e.get("text", "") or e.get("code", "") or "").strip()
+                if label and len(inline_labels) < 10:
+                    inline_labels.append(label)
             _labels = [str(e.get("text", "") or e.get("code", "") or e.get("type", ""))[:28]
                        for e in board["elements"] if e.get("type") != "arrow"][:4]
             log.info("Diagram inline: window #%d -> %d element(s) [%s]", n, len(board["elements"]), " | ".join(_labels))
@@ -420,16 +469,8 @@ def chat_worker(
             if (is_greeting and sent_count >= cfg.greeting_max) or sent_count >= cfg.max_chat_sentences:
                 producer_stop.set()
                 break
-        if (not emitted_text or (llm_error and not emitted_audio)) and not (stop_evt is not None and stop_evt.is_set()):
-            if inline_count[0] > 0:
-                # The brain drew but barely spoke — claiming "we didn't hear
-                # you" would be a lie (we heard fine). Narrate the board that
-                # actually landed instead.
-                log.warning("Turn spoke nothing but drew %d inline board(s) — narrating board, not mishearing",
-                            inline_count[0])
-                fallback = "बोर्ड पर बना दिया है, ये देखो।"
-            else:
-                fallback = "अरे, आवाज़ साफ़ नहीं आ पाई। एक बार फिर से बोल दो।"
+        if (not emitted_text or (llm_error and not emitted_audio)) and not (stop_evt is not None and stop_evt.is_set()) and inline_count[0] == 0:
+            fallback = "अरे, आवाज़ साफ़ नहीं आ पाई। एक बार फिर से बोल दो।"
             out_q.put(("text", fallback))
             _ship_window(fallback, min(num_step, cfg.first_window_step), watch=False)
             emitted_audio = True
@@ -440,6 +481,17 @@ def chat_worker(
         # to it — drain them now so trailing visuals are never stranded.
         if inline_board and not (stop_evt is not None and stop_evt.is_set()):
             _drain_inline(win_seq[0])
+        # Drew-but-barely-spoke: the main call led with tools and starved its
+        # own narration (classic tool-first response). Feed the board labels
+        # back for one short spoken pass — voice and board both land, no lies.
+        spoken_chars = sum(len(t) for t in turn_texts)
+        if (inline_board and inline_count[0] > 0 and spoken_chars < 60
+                and not llm_error and not (stop_evt is not None and stop_evt.is_set())):
+            narration = _narrate_board()
+            if narration:
+                out_q.put(("text", narration))
+                _ship_window(narration, num_step, watch=False)
+                emitted_audio = True
         # Whole-turn board: ONE rich planner call on the full reply, fired
         # while audio still drains so its ~1s hides inside playback.
         # With inline boards on, this is strictly a fallback: it runs only
