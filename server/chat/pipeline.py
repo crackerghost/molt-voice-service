@@ -511,12 +511,23 @@ def chat_worker(
             and (not inline_board or (inline_count[0] == 0 and _board_promised(full_text)))
         ):
             def _turn_diagram() -> None:
+                def _status(stage: str, detail: str = "") -> None:
+                    # Board verdicts ride the socket too (not just the server
+                    # terminal) so the browser trace shows WHY a board did or
+                    # didn't come — no terminal access needed to debug.
+                    try:
+                        out_q.put(("board_status", {"stage": stage, "detail": detail[:200]}))
+                    except Exception:
+                        pass
                 try:
                     if stop_evt is not None and stop_evt.is_set():
+                        _status("skipped", "stopped")
                         return
                     full = " ".join(turn_texts).strip()
                     if len(full) < 40:
+                        _status("skipped", f"reply too short ({len(full)}ch)")
                         return
+                    _status("planning", f"{len(full)}ch reply")
                     d = deps.diagram_generate(
                         diagram_ctx["key"], full[:1500], diagram_ctx.get("topic", ""),
                         stop_evt, client=http_client, url=diagram_ctx.get("diagram_url") or cfg_url,
@@ -528,6 +539,7 @@ def chat_worker(
                     )
                     if d and not (stop_evt is not None and stop_evt.is_set()):
                         turn_plan["d"] = d
+                        _status("planned", f"{len(d['elements'])} elements")
                         # Emit straight onto out_q (exactly once — the post-join
                         # block below only waits). A result landing BEFORE done
                         # rides the normal sender order; one landing AFTER done
@@ -541,8 +553,14 @@ def chat_worker(
                         }))
                         _labels = [str(e.get("text", "") or e.get("code", "") or e.get("type", ""))[:28] for e in d["elements"] if e.get("type") != "arrow"][:6]
                         log.info("Diagram turn-plan -> %d element(s) [%s]", len(d["elements"]), " | ".join(_labels))
+                    elif not (stop_evt is not None and stop_evt.is_set()):
+                        _status("empty", "judge drew nothing")
                 except Exception as e:  # noqa: BLE001 — board must never break voice
                     log.warning("Diagram turn-plan skipped: %s", e)
+                    try:
+                        out_q.put(("board_status", {"stage": "skipped", "detail": str(e)[:200]}))
+                    except Exception:
+                        pass
 
             turn_thread = threading.Thread(target=_turn_diagram, daemon=True)
             turn_thread.start()

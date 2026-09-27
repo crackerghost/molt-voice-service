@@ -413,6 +413,8 @@ def make_ws_tts(services):
                             elif kind == "diagram":
                                 if not stop_evt.is_set():
                                     await websocket.send_text(json.dumps({"type": "diagram", **payload}))
+                            elif kind == "board_status":
+                                await websocket.send_text(json.dumps({"type": "board_status", **payload}))
                             elif kind == "os_action":
                                 if not stop_evt.is_set():
                                     await websocket.send_text(json.dumps({"type": "os_action", "action": payload}))
@@ -458,8 +460,9 @@ def make_ws_tts(services):
                                         if kind2 == "error":
                                             await websocket.send_text(json.dumps({"type": "error", "message": payload2}))
                                             break
-                                        if kind2 == "text":
-                                            await websocket.send_text(json.dumps({"type": "text", "text": payload2}))
+                                        if kind2 == "text" or kind2 == "board_status":
+                                            key2 = "text" if kind2 == "text" else "board_status"
+                                            await websocket.send_text(json.dumps({"type": key2, **payload2} if isinstance(payload2, dict) else {"type": key2, "text": payload2}))
                                             continue
                                         # window/audio/os_action after done: ignore, keep draining
                                 await websocket.send_text(json.dumps({
