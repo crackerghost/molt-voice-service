@@ -310,11 +310,18 @@ def make_ws_tts(services):
                              "diagram_thinking": llm_cfg.get("diagram_thinking")}
                             if should_diagram else None
                         )
+                        # Single brain: when this turn may draw, the answer call
+                        # itself carries the draw tool — words and visuals come
+                        # from one decision-maker and can never disagree.
+                        inline_board = bool(should_diagram) and bool(getattr(cfg, "diagram_inline", True))
+                        if inline_board:
+                            log.info("WS chat request: inline board on (single brain)")
                         threading.Thread(
                             target=chat_worker,
                             args=(pipeline, key, messages, temperature, num_step, speed, out_q, stop_evt, start,
                                   llm_client, diagram_ctx, llm_cfg, os_ctx),
-                            kwargs={"provider_clients": services.runtime.provider_clients},
+                            kwargs={"provider_clients": services.runtime.provider_clients,
+                                    "inline_board": inline_board},
                             daemon=True,
                         ).start()
 

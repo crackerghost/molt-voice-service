@@ -517,61 +517,77 @@ def generate_for_step(
         if not arguments:
             return None
         try:
-            diagram = normalize(json.loads(arguments))
+            board = assemble_board(arguments, id_prefix=id_prefix, turn_id=turn_id)
         except (TypeError, ValueError, json.JSONDecodeError):
             return None
-        if not diagram or stop_evt.is_set():
+        if not board or stop_evt.is_set():
             return None
-        # Namespace ids per window so deltas merge without collisions.
-        # The model is told to prefix with TAG already — don't double it.
-        nodes = {}
-        out = []
-        for item in diagram["elements"]:
-            old_id = item["id"]
-            new_id = old_id if old_id.startswith(f"{id_prefix}-") else f"{id_prefix}-{old_id}"
-            new_id = new_id[:80]
-            nodes[old_id] = new_id
-            item["id"] = new_id
-            out.append(item)
-        for item in out:
-            if item["type"] == "arrow":
-                if item.get("startNodeId") in nodes:
-                    item["startNodeId"] = nodes[item["startNodeId"]]
-                if item.get("endNodeId") in nodes:
-                    item["endNodeId"] = nodes[item["endNodeId"]]
-        # Same-turn repetition guard: each window draws only its NEW idea —
-        # repeats of earlier windows' nodes are dropped here (dangling arrows
-        # are cleaned by the keep-set filter below).
-        out = _dedupe_turn(turn_id, out)
-        # Blank-label nodes render as empty boxes — worse than no board. Drop
-        # shapes with no text (code/note survive on snippet/takeaway), then
-        # re-drop arrows left dangling by that.
-        out = [it for it in out
-               if it["type"] == "arrow"
-               or str(it.get("text", "")).strip()
-               or (it["type"] == "code" and str(it.get("code", "")).strip())]
-        keep = {it["id"] for it in out if it["type"] in {"rectangle", "ellipse", "diamond", "triangle", "text"}}
-        out = [it for it in out
-               if it["type"] != "arrow"
-               or (it.get("startNodeId") in keep and it.get("endNodeId") in keep)]
-        # Compare steps: no arrow may cross the VS divider — the model is
-        # told this, but prod logs show it does it anyway. Enforce here.
-        side_of = {it["id"]: it.get("side") for it in out if it["type"] != "arrow"}
-        if any(s == "left" for s in side_of.values()) and any(s == "right" for s in side_of.values()):
-            out = [it for it in out
-                   if it["type"] != "arrow"
-                   or side_of.get(it.get("startNodeId")) == side_of.get(it.get("endNodeId"))]
-        if not any(it["type"] in {"rectangle", "ellipse", "diamond", "triangle", "text", "code", "note", "table", "quiz", "html"} for it in out):
-            return None
-        # Deterministic binary-tree layout (model coordinates are NOT trusted —
-        # prod boards showed boxes piled on top of each other, then one
-        # cramped horizontal strip). See _layout_board.
-        _layout_board(out)
-        _turn_shift(turn_id, out)
-        return {"elements": out}
+        return board
     finally:
         _PLANNER_SEMAPHORE.release()
 
+
+
+def assemble_board(arguments: object, *, id_prefix: str, turn_id: str) -> dict | None:
+    """Turn raw draw-tool arguments into a client-ready board delta.
+
+    Shared by the sidecar planner AND inline main-call tool calls, so both
+    paths produce identically namespaced, deduped, filtered and laid-out
+    chalk. Raises (TypeError/ValueError/JSONDecodeError) on unparsable
+    arguments — the caller decides whether that is a retry or a drop.
+    Accepts a raw JSON string (sidecar planner) or a parsed dict (inline).
+    """
+    data = json.loads(arguments) if isinstance(arguments, (str, bytes, bytearray)) else arguments
+    diagram = normalize(data)
+    if not diagram:
+        return None
+    # Namespace ids per window so deltas merge without collisions.
+    # The model is told to prefix with TAG already — don't double it.
+    nodes = {}
+    out = []
+    for item in diagram["elements"]:
+        old_id = item["id"]
+        new_id = old_id if old_id.startswith(f"{id_prefix}-") else f"{id_prefix}-{old_id}"
+        new_id = new_id[:80]
+        nodes[old_id] = new_id
+        item["id"] = new_id
+        out.append(item)
+    for item in out:
+        if item["type"] == "arrow":
+            if item.get("startNodeId") in nodes:
+                item["startNodeId"] = nodes[item["startNodeId"]]
+            if item.get("endNodeId") in nodes:
+                item["endNodeId"] = nodes[item["endNodeId"]]
+    # Same-turn repetition guard: each window draws only its NEW idea —
+    # repeats of earlier windows' nodes are dropped here (dangling arrows
+    # are cleaned by the keep-set filter below).
+    out = _dedupe_turn(turn_id, out)
+    # Blank-label nodes render as empty boxes — worse than no board. Drop
+    # shapes with no text (code/note survive on snippet/takeaway), then
+    # re-drop arrows left dangling by that.
+    out = [it for it in out
+           if it["type"] == "arrow"
+           or str(it.get("text", "")).strip()
+           or (it["type"] == "code" and str(it.get("code", "")).strip())]
+    keep = {it["id"] for it in out if it["type"] in {"rectangle", "ellipse", "diamond", "triangle", "text"}}
+    out = [it for it in out
+           if it["type"] != "arrow"
+           or (it.get("startNodeId") in keep and it.get("endNodeId") in keep)]
+    # Compare steps: no arrow may cross the VS divider — the model is
+    # told this, but prod logs show it does it anyway. Enforce here.
+    side_of = {it["id"]: it.get("side") for it in out if it["type"] != "arrow"}
+    if any(s == "left" for s in side_of.values()) and any(s == "right" for s in side_of.values()):
+        out = [it for it in out
+               if it["type"] != "arrow"
+               or side_of.get(it.get("startNodeId")) == side_of.get(it.get("endNodeId"))]
+    if not any(it["type"] in {"rectangle", "ellipse", "diamond", "triangle", "text", "code", "note", "table", "quiz", "html"} for it in out):
+        return None
+    # Deterministic binary-tree layout (model coordinates are NOT trusted —
+    # prod boards showed boxes piled on top of each other, then one
+    # cramped horizontal strip). See _layout_board.
+    _layout_board(out)
+    _turn_shift(turn_id, out)
+    return {"elements": out}
 
 
 def _prompt(text: str, history: list[dict]) -> list[dict]:

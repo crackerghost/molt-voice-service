@@ -123,6 +123,7 @@ def chat_worker(
     llm_cfg: dict | None = None,
     os_ctx: dict | None = None,
     provider_clients=None,
+    inline_board: bool = False,
 ):
     """Full chat-turn pipeline (see module docstring)."""
     from server.speech.pacing import GREETING_RE
@@ -144,19 +145,31 @@ def chat_worker(
 
     sent_q: queue.Queue = queue.Queue()
     win_q: queue.Queue = queue.Queue()
+    # Inline boards: draw-tool calls the MAIN answer emits itself (single
+    # brain — words and visuals can never disagree). Drained per window.
+    tool_sink_q: queue.Queue = queue.Queue()
+    inline_count = [0]
     llm_error: list[str] = []
     audio_done = threading.Event()
     producer_stop = threading.Event()
 
     def llm_producer():
         try:
+            # Inline boards share the answer call, so they need headroom for
+            # board JSON on top of the speech budget (teaching turns only).
+            tok_budget = cfg.llm_max_tokens + (cfg.diagram_max_tokens if inline_board else 0)
+            stream_kw: dict = {}
+            if inline_board:
+                from server.llm.diagrams import DIAGRAM_TOOL as _INLINE_TOOL
+                stream_kw = {"tools": [_INLINE_TOOL], "tool_choice": "auto", "tool_sink": tool_sink_q}
             for raw, complete in deps.llm_stream_phrases(
                 key, messages, temperature, http_client,
-                max_tokens=cfg.llm_max_tokens,
+                max_tokens=tok_budget,
                 retries=cfg.llm_retries,
                 phrase_chars=cfg.first_window_chars,
                 model=cfg_model, url=cfg_url, reasoning_effort=cfg_reasoning,
                 thinking=llm_cfg.get("thinking"),
+                **stream_kw,
             ):
                 if stop_evt is not None and stop_evt.is_set():
                     return
@@ -247,13 +260,62 @@ def chat_worker(
         except Exception as e:  # noqa: BLE001 — board must never break voice
             log.warning("Diagram watcher window #%d skipped: %s", n, e)
 
+    def _board_promised(text: str) -> bool:
+        """Did the spoken reply point at the board? (fallback trigger.)"""
+        try:
+            from server.llm.diagrams import BOARD_PROMISE_RE as _PROMISE_RE
+        except Exception:
+            return False
+        try:
+            return bool(_PROMISE_RE.search(text or ""))
+        except Exception:
+            return False
+
+    def _drain_inline(n: int) -> None:
+        """Emit the main answer's own draw-tool calls as this window's board.
+
+        Same single brain chose the words and the visuals, so chalk lands
+        with the sentence being spoken — no cross-call disagreement possible.
+        """
+        if not inline_board or diagram_ctx is None:
+            return
+        from server.llm.diagrams import assemble_board as _assemble
+        while True:
+            try:
+                item = tool_sink_q.get_nowait()
+            except queue.Empty:
+                return
+            if stop_evt is not None and stop_evt.is_set():
+                return
+            if not isinstance(item, dict) or item.get("name") != "draw_flowchart_or_diagram":
+                continue
+            try:
+                board = _assemble(item.get("arguments") or {}, id_prefix=f"w{n}",
+                                  turn_id=diagram_ctx.get("turn_id", ""))
+            except (TypeError, ValueError):
+                log.warning("Inline board unparsable, dropping (window #%d)", n)
+                continue
+            if not board:
+                continue
+            out_q.put(("diagram", {
+                "window_n": n, "mode": "append",
+                "elements": board["elements"],
+                "turn_id": diagram_ctx.get("turn_id", ""),
+                "client_turn_id": diagram_ctx.get("client_turn_id", ""),
+            }))
+            inline_count[0] += 1
+            _labels = [str(e.get("text", "") or e.get("code", "") or e.get("type", ""))[:28]
+                       for e in board["elements"] if e.get("type") != "arrow"][:4]
+            log.info("Diagram inline: window #%d -> %d element(s) [%s]", n, len(board["elements"]), " | ".join(_labels))
+
     def _ship_window(win_text: str, steps: int, watch: bool = True, raw_text: str = "") -> None:
         win_seq[0] += 1
         n = win_seq[0]
         win_q.put({"text": win_text, "steps": steps, "n": n})
         if (win_text or "").strip():
             turn_texts.append(win_text.strip())
-        if watch and diagram_ctx and plan_mode == "window":
+        _drain_inline(n)
+        if watch and diagram_ctx and plan_mode == "window" and not inline_board:
             threading.Thread(target=_diagram_watch, args=(n, win_text, raw_text), daemon=True).start()
 
     def _os_director() -> None:
@@ -366,15 +428,23 @@ def chat_worker(
         if window and not (stop_evt is not None and stop_evt.is_set()):
             steps = min(num_step, cfg.first_window_step) if not emitted_audio else num_step
             _ship_window(" ".join(window), steps, raw_text=_take_raw())
+        # Any draw calls that finished after the last window shipped belong
+        # to it — drain them now so trailing visuals are never stranded.
+        if inline_board and not (stop_evt is not None and stop_evt.is_set()):
+            _drain_inline(win_seq[0])
         # Whole-turn board: ONE rich planner call on the full reply, fired
         # while audio still drains so its ~1s hides inside playback.
+        # With inline boards on, this is strictly a fallback: it runs only
+        # when the answer drew nothing itself AND promised a board out loud.
         turn_plan: dict = {}
         turn_thread = None
+        full_text = " ".join(turn_texts).strip()
         if (
             diagram_ctx
             and plan_mode == "turn"
             and not llm_error
             and not (stop_evt is not None and stop_evt.is_set())
+            and (not inline_board or (inline_count[0] == 0 and _board_promised(full_text)))
         ):
             def _turn_diagram() -> None:
                 try:

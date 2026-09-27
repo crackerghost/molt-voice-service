@@ -44,6 +44,9 @@ def llm_stream_phrases(
     url: str,
     reasoning_effort: str | None = None,
     thinking: dict | None = None,
+    tools: list[dict] | None = None,
+    tool_choice: object = "auto",
+    tool_sink=None,
 ):
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
     total_attempts = 1 + max(0, retries)
@@ -57,6 +60,9 @@ def llm_stream_phrases(
             "max_tokens": tok_budget,
             "stream": True,
         }
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = tool_choice
         if reasoning_effort and ("gpt-oss" in model or thinking is not None):
             payload["reasoning_effort"] = reasoning_effort
         if thinking is not None:
@@ -64,6 +70,26 @@ def llm_stream_phrases(
         buf = ""
         yielded = False
         retry_wait = 0.8
+        # Streaming tool calls arrive as per-index argument fragments across
+        # chunks — accumulate here, emit whole calls to tool_sink.
+        tool_bufs: dict[int, dict] = {}
+
+        def _flush_tool(index: int) -> bool:
+            """Deliver one completed tool call (best-effort JSON parse)."""
+            item = tool_bufs.pop(index, None)
+            if not item or tool_sink is None:
+                return False
+            try:
+                args = json.loads(item["args"] or "{}")
+            except ValueError:
+                log.warning("Inline tool call unparsable, dropping (id=%s)", item.get("id"))
+                return False
+            try:
+                tool_sink.put({"name": item.get("name") or "", "arguments": args})
+            except Exception:  # noqa: BLE001 — sink full/closed: voice unaffected
+                return False
+            return True
+
         try:
             with http_client.stream("POST", url, headers=headers, json=payload) as r:
                 if r.status_code != 200:
@@ -86,12 +112,32 @@ def llm_stream_phrases(
                     if data == "[DONE]":
                         break
                     try:
-                        delta = json.loads(data)["choices"][0]["delta"].get("content") or ""
+                        delta = json.loads(data)["choices"][0].get("delta") or {}
                     except (KeyError, IndexError, ValueError):
                         continue
-                    if not delta:
+                    # Tool fragments first (a chunk can carry both).
+                    for tc in delta.get("tool_calls") or []:
+                        try:
+                            idx = int(tc.get("index", 0))
+                        except (TypeError, ValueError):
+                            idx = 0
+                        if idx not in tool_bufs and tool_bufs:
+                            # A new index means every buffered call is done.
+                            for pending in list(tool_bufs):
+                                if _flush_tool(pending):
+                                    yielded = True
+                        slot = tool_bufs.setdefault(idx, {"id": "", "name": "", "args": ""})
+                        if tc.get("id"):
+                            slot["id"] = str(tc["id"])
+                        fn = tc.get("function") or {}
+                        if fn.get("name"):
+                            slot["name"] = str(fn["name"])
+                        if fn.get("arguments"):
+                            slot["args"] += str(fn["arguments"])
+                    delta_text = delta.get("content") or ""
+                    if not delta_text:
                         continue
-                    buf += delta
+                    buf += delta_text
                     while True:
                         m = SENT_END_RE.search(buf)
                         if m:
@@ -112,6 +158,10 @@ def llm_stream_phrases(
             if tail:
                 yielded = True
                 yield tail, True
+            # Stream over: whatever tool call was still assembling is done now.
+            for pending in list(tool_bufs):
+                if _flush_tool(pending):
+                    yielded = True
             if not yielded:
                 raise LLMRetryable("LLM returned no content (token budget exhausted by reasoning?)")
             return
