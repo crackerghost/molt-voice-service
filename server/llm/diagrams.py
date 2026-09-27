@@ -29,6 +29,17 @@ DIAGRAM_INTENT_RE = re.compile(
     r"चित्र|डायग्राम|फ्लोचार्ट|दिखाओ|समझाने के लिए|तुलना|टाइमलाइन|प्रोसेस)",
     re.IGNORECASE,
 )
+# The speaker and the board are planned by separate calls, so they can
+# disagree: the tutor says "board par dekho" while the planner draws nothing.
+# Any mention of the board/screen/diagram in the SPOKEN reply is the tutor
+# pointing at visuals — a promise the board must keep. Noun-anchored (not
+# the bare word "dekho", which appears everywhere) to avoid false orders.
+BOARD_PROMISE_RE = re.compile(
+    r"(?:\bboard\b|white\s*board|green\s*board|whiteboard|बोर्ड|"
+    r"\bscreen\b|स्क्रीन|diagram|डायग्राम|flowchart|फ्लोचार्ट|"
+    r"\bchart\b|चार्ट|desktop|डेस्कटॉप|drawing|ड्रॉइंग)",
+    re.IGNORECASE,
+)
 
 DIAGRAM_TOOL = {
     "type": "function",
@@ -216,7 +227,12 @@ def _step_prompt(step_text: str, topic: str, tag: str = "w", whole: bool = False
                 "words from the STEP that name it (label 'Computer' -> trigger "
                 "'computer'; 'query selector' -> 'query selector'). The board "
                 "draws each element the instant the tutor speaks its trigger, "
-                "so triggers must be words the STEP actually says. Shapes give x/y/width/height; ARROWS give ONLY id, type, "
+                "so triggers must be words the STEP actually says. BOARD PROMISE: "
+                "if the STEP mentions the board, screen, or diagram ('board par dekho'), "
+                "the tutor has ALREADY pointed the learner at a visual — returning no tool "
+                "call strands them staring at an empty board. A promised board is an order: "
+                "draw the TOPIC (house, tags, parts — whatever the TOPIC names) even if the "
+                "STEP's own words are thin. Shapes give x/y/width/height; ARROWS give ONLY id, type, "
                 "startNodeId, endNodeId — never x/y on arrows; code/note/table/quiz/html give "
                 "ONLY id, type, content fields — never x/y. Shapes: "
                 "rectangle = component/step/part, ellipse = start/end/entity/outcome, "
@@ -392,7 +408,11 @@ def generate_for_step(
     _log = _logging.getLogger("voice_api")
     if stop_evt.is_set() or not (step_text or "").strip():
         return None
-    if not is_visual_step(step_text):
+    # A board promise in the spoken words overrides the visual gate: the
+    # tutor already pointed at the board, so "nothing drawable" is not an
+    # acceptable answer — draw the TOPIC.
+    promised = bool(BOARD_PROMISE_RE.search(step_text or ""))
+    if not is_visual_step(step_text) and not promised:
         # Short / greeting-only window — nothing to draw. Logged so an empty
         # board is diagnosable from the terminal instead of a mystery.
         _log.info("Diagram planner: window %s skipped (non-visual step %d ch)", id_prefix, len((step_text or "").strip()))
@@ -421,7 +441,12 @@ def generate_for_step(
                 "model": model,
                 "messages": _step_prompt(step_text, topic, id_prefix, whole=whole),
                 "tools": [DIAGRAM_TOOL],
-                "tool_choice": "auto",
+                # Promised board that the judge abstained on: require the draw
+                # call on the retry instead of asking again.
+                "tool_choice": (
+                    {"type": "function", "function": {"name": "draw_flowchart_or_diagram"}}
+                    if (promised and attempt > 0) else "auto"
+                ),
                 "temperature": 0,
                 "max_tokens": budget,
             }
@@ -473,6 +498,11 @@ def generate_for_step(
                     arguments = function.get("arguments")
                     break
             if not arguments:
+                if promised and attempt == 0:
+                    # Board was promised out loud — the judge abstaining is not
+                    # acceptable. Retry once with the draw call REQUIRED.
+                    _log.info("Diagram planner: window %s promised a board, forcing draw call", id_prefix)
+                    continue
                 _log.info("Diagram planner: window %s skipped (judge: nothing drawable) | step=%.60s", id_prefix, (step_text or "").replace("\n", " "))
                 return None
             try:
