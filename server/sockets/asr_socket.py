@@ -34,6 +34,7 @@ def make_ws_asr(services):
     def _ws_asr_factory():
         async def ws_asr(websocket: WebSocket):
             await websocket.accept()
+            log.info("ASR websocket connected from %s", websocket.client.host if websocket.client else "unknown")
             ctrl_q: queue.Queue = queue.Queue()
             pcm_q: queue.Queue = queue.Queue()
             out_q: queue.Queue = queue.Queue()
@@ -61,12 +62,16 @@ def make_ws_asr(services):
                                 continue
                             if mtype == "mode":
                                 want = str((msg or {}).get("vad", "")).strip().lower()
+                                log.info("ASR control: mode=%s", want or "client")
                                 ctrl_q.put("__mode_server__" if want == "server" else "__mode_client__")
                                 continue
                             if mtype == "assistant":
                                 a = bool((msg or {}).get("active"))
+                                log.info("ASR control: assistant_active=%s", a)
                                 ctrl_q.put("__assistant_on__" if a else "__assistant_off__")
                                 continue
+                            if mtype in ("start", "end", "cancel", "early_end", "resume"):
+                                log.info("ASR control: %s", mtype)
                             ctrl_q.put(mtype or "__close__" if mtype in ("start", "end", "cancel", "early_end", "resume") else "__noop__")
                 except Exception:
                     ctrl_q.put("__close__")
@@ -248,7 +253,7 @@ def make_ws_asr(services):
                                         last_partial = time.monotonic()
                                         vad.reset()
                                         out_q.put(("vad_start", ""))
-                                        log.info("Server VAD: utterance OPENED")
+                                        log.info("Server VAD: utterance OPENED (assistant_active=%s)", assistant_active)
                                     else:
                                         pre_roll.append(frame)
                                 elif silence_run >= A.SILERO_SILENCE_MIN_MS and held:
@@ -333,6 +338,8 @@ def make_ws_asr(services):
                     except queue.Empty:
                         await asyncio.sleep(0.05)
                         continue
+                    if kind in ("partial", "speculative", "final", "rejected", "error"):
+                        log.info("ASR output: type=%s text=%r", kind, str(text or "")[:240])
                     try:
                         frame = (
                             {"type": kind, "message": text}
