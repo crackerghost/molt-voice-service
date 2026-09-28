@@ -287,7 +287,11 @@ def make_ws_asr(services):
                         assistant_active = False
                         continue
                     if ctl == "start":
-                        buf.clear(); total = 0; new_since = 0.0; open_utt = True
+                        # In server-VAD mode, opening the push-to-talk socket is
+                        # not the same as starting an utterance. Wait for
+                        # Silero to detect real speech; otherwise the normal
+                        # pre-speech silence is finalized as a fake `blip`.
+                        buf.clear(); total = 0; new_since = 0.0; open_utt = not server_mode
                         last_partial = time.monotonic()
                         early = False; held = None; total_at_early = 0
                         in_trailing_silence = False
@@ -316,7 +320,12 @@ def make_ws_asr(services):
                         early = False; held = None; total_at_early = 0
                         continue
                     if ctl == "end":
-                        finish_utterance("client-vad end")
+                        if open_utt:
+                            finish_utterance("client-vad end")
+                        else:
+                            # Empty push-to-talk releases are intentionally
+                            # silent; they are not rejected user utterances.
+                            out_q.put(("final", ""))
                         continue
                     if (ctl == "__noop__" or ctl is None) and open_utt and total >= int(0.5 * A.ASR_SR) \
                             and new_since >= A.ASR_PARTIAL_MIN_NEW \
