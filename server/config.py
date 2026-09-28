@@ -144,7 +144,7 @@ class VoiceConfig:
     # Speech-synced deltas are the production default. Turn mode stays as a
     # reversible fallback for deployments that prefer one richer, later board.
     diagram_plan_mode: str = "window"  # window = live deltas; turn = one late rich board
-    diagram_inline: bool = False  # single brain (answer draws itself); off = sidecar planners from the reply text
+    diagram_inline: bool = True  # single brain: the answer agent owns its draw-tool decision
     diagram_model: str = ""
     diagram_max_tokens: int = 1000
     os_director_enabled: bool = True
@@ -309,7 +309,12 @@ class VoiceConfig:
             deepseek_reasoning_effort=effort,
             diagram_enabled=os.environ.get("DIAGRAM_EVENTS", "1") == "1",
     diagram_plan_mode=_plan_mode,
-            diagram_inline=os.environ.get("DIAGRAM_INLINE", "0") == "1",
+            # Single-brain board planning is now the safe production path. The
+            # old DIAGRAM_INLINE=0 setting created split-brain turns where the
+            # tutor promised a board that an independent planner rejected.
+            # Keep one explicit emergency rollback without requiring env edits
+            # on existing deployments.
+            diagram_inline=os.environ.get("DIAGRAM_SIDECAR", "0") != "1",
             diagram_model=os.environ.get("DIAGRAM_MODEL", "").strip() or llm_model,
             diagram_max_tokens=int(os.environ.get("DIAGRAM_MAX_TOKENS", "1000")),
             os_director_enabled=os.environ.get("OS_DIRECTOR_EVENTS", "1") == "1",

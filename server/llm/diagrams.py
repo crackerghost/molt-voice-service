@@ -30,6 +30,15 @@ DIAGRAM_INTENT_RE = re.compile(
     r"चित्र|डायग्राम|फ्लोचार्ट|दिखाओ|समझाने के लिए|तुलना|टाइमलाइन|प्रोसेस)",
     re.IGNORECASE,
 )
+# Strict subset used only for the delivery guarantee: these words explicitly
+# ask for a visual. Broad teaching words such as "explain" still reach the
+# agent decision, but do not force a board.
+EXPLICIT_DIAGRAM_RE = re.compile(
+    r"(?:\bdraw\b|\bdiagram\b|\bflowchart\b|visuali[sz]e|mind\s*map|"
+    r"\btimeline\b|चित्र|डायग्राम|फ्लोचार्ट|"
+    r"बोर्ड.{0,24}(?:दिखा|बना)|(?:दिखा|बना).{0,24}बोर्ड)",
+    re.IGNORECASE,
+)
 # The speaker and the board are planned by separate calls, so they can
 # disagree: the tutor says "board par dekho" while the planner draws nothing.
 # Any mention of the board/screen/diagram in the SPOKEN reply is the tutor

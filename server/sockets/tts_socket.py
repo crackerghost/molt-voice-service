@@ -36,7 +36,7 @@ _DONE_GRACE_S = max(0.0, float(os.environ.get("DIAGRAM_DONE_GRACE_S", "6") or 6)
 def make_ws_tts(services):
     from server import vision as vision_facade
     from server.chat.pipeline import chat_worker, synth_worker
-    from server.llm.diagrams import should_generate as should_generate_diagram
+    from server.llm.diagrams import EXPLICIT_DIAGRAM_RE, should_generate as should_generate_diagram
     from server.llm.os_control import (
         CODE_DIRECTOR_TOKENS,
         ack_block as os_ack_block,
@@ -305,6 +305,7 @@ def make_ws_tts(services):
                         diagram_ctx = (
                             {"key": key, "topic": text, "turn_id": turn_id,
                              "client_turn_id": client_turn_id,
+                             "required": bool(EXPLICIT_DIAGRAM_RE.search(text)),
                              "diagram_model": llm_cfg.get("diagram_model"),
                              "diagram_url": llm_cfg.get("url"),
                              "diagram_thinking": llm_cfg.get("diagram_thinking")}
@@ -316,6 +317,14 @@ def make_ws_tts(services):
                         inline_board = bool(should_diagram) and bool(getattr(cfg, "diagram_inline", False))
                         if inline_board:
                             log.info("WS chat request: inline board on (single brain)")
+                            base = messages[0].get("content", "") if isinstance(messages[0], dict) else ""
+                            messages[0] = {"role": "system", "content": base + (
+                                "\n\nBOARD TOOL RULE: You own the board decision in this same response. "
+                                "Call draw_flowchart_or_diagram only when a visual materially helps, or whenever "
+                                "the learner explicitly asks to draw/show a visual. If you say board, screen, "
+                                "diagram, or ask the learner to look at it, you MUST emit the draw tool call in "
+                                "this response. If you do not call the tool, do not mention or point at the board."
+                            )}
                         threading.Thread(
                             target=chat_worker,
                             args=(pipeline, key, messages, temperature, num_step, speed, out_q, stop_evt, start,

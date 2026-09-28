@@ -9,9 +9,10 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from server.chat import pipeline as _pipeline  # noqa: F401 (import must not explode)
+from server.chat import pipeline as _pipeline
+from server.chat.pipeline import needs_turn_board_fallback
 from server.config import VoiceConfig
-from server.llm.diagrams import _step_prompt, generate_for_step, normalize, should_generate
+from server.llm.diagrams import EXPLICIT_DIAGRAM_RE, _step_prompt, generate_for_step, normalize, should_generate
 from server.llm.os_control import wants_desktop_move, wants_os_action
 
 
@@ -59,6 +60,20 @@ class PromptTests(unittest.TestCase):
 
 
 class PlanModeTests(unittest.TestCase):
+    def test_inline_agent_falls_back_when_board_promise_was_not_kept(self):
+        self.assertTrue(needs_turn_board_fallback("window", True, 0, True))
+        self.assertFalse(needs_turn_board_fallback("window", True, 1, True))
+        self.assertFalse(needs_turn_board_fallback("window", True, 0, False))
+
+    def test_single_brain_board_is_default_and_legacy_zero_is_ignored(self):
+        with patch.dict(os.environ, {"DIAGRAM_INLINE": "0"}, clear=False):
+            os.environ.pop("DIAGRAM_SIDECAR", None)
+            self.assertTrue(VoiceConfig.from_env(".").diagram_inline)
+
+    def test_sidecar_has_explicit_emergency_opt_out(self):
+        with patch.dict(os.environ, {"DIAGRAM_SIDECAR": "1"}, clear=False):
+            self.assertFalse(VoiceConfig.from_env(".").diagram_inline)
+
     def test_default_is_window_for_live_speech_sync(self):
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("DIAGRAM_PLAN_MODE", None)
@@ -82,6 +97,12 @@ class PlannerGuardTests(unittest.TestCase):
 
 
 class GateTests(unittest.TestCase):
+    def test_only_actual_visual_requests_force_a_board(self):
+        self.assertIsNotNone(EXPLICIT_DIAGRAM_RE.search("board pe diagram bana ke samjhao"))
+        self.assertIsNotNone(EXPLICIT_DIAGRAM_RE.search("draw a flowchart"))
+        self.assertIsNone(EXPLICIT_DIAGRAM_RE.search("explain photosynthesis"))
+        self.assertIsNone(EXPLICIT_DIAGRAM_RE.search("flexbox samjhao"))
+
     def test_teaching_turns_get_board(self):
         with patch.dict(os.environ, {"DIAGRAM_GATE": "auto"}, clear=False):
             for t in ("HTML सिखाओ", "पेंटिंग बनाना सिखाओ",

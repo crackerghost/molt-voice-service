@@ -31,6 +31,18 @@ from typing import Any, Callable
 log = logging.getLogger("voice_api")
 
 
+def needs_turn_board_fallback(
+    plan_mode: str,
+    inline_board: bool,
+    inline_count: int,
+    board_required: bool,
+) -> bool:
+    """Use one whole-turn plan for turn mode or an unkept board promise."""
+    return (plan_mode == "turn" and not inline_board) or (
+        inline_board and inline_count == 0 and board_required
+    )
+
+
 @dataclass
 class ChatPipelineDeps:
     """Everything the pipeline needs, injected by the composition root."""
@@ -509,12 +521,12 @@ def chat_worker(
         turn_plan: dict = {}
         turn_thread = None
         full_text = " ".join(turn_texts).strip()
+        board_required = bool((diagram_ctx or {}).get("required")) or _board_promised(full_text)
         if (
             diagram_ctx
-            and plan_mode == "turn"
+            and needs_turn_board_fallback(plan_mode, inline_board, inline_count[0], board_required)
             and not llm_error
             and not (stop_evt is not None and stop_evt.is_set())
-            and (not inline_board or (inline_count[0] == 0 and _board_promised(full_text)))
         ):
             def _turn_diagram() -> None:
                 def _status(stage: str, detail: str = "") -> None:
@@ -530,12 +542,15 @@ def chat_worker(
                         _status("skipped", "stopped")
                         return
                     full = " ".join(turn_texts).strip()
-                    if len(full) < 40:
+                    if len(full) < 40 and not board_required:
                         _status("skipped", f"reply too short ({len(full)}ch)")
                         return
                     _status("planning", f"{len(full)}ch reply")
+                    planner_text = full
+                    if board_required and not _board_promised(full):
+                        planner_text = f"BOARD REQUIRED BY USER. {full}"
                     d = deps.diagram_generate(
-                        diagram_ctx["key"], full[:1500], diagram_ctx.get("topic", ""),
+                        diagram_ctx["key"], planner_text[:1500], diagram_ctx.get("topic", ""),
                         stop_evt, client=http_client, url=diagram_ctx.get("diagram_url") or cfg_url,
                         model=diagram_ctx.get("diagram_model") or cfg_diagram_model,
                         max_tokens=cfg.diagram_max_tokens,
