@@ -229,9 +229,12 @@ def make_ws_asr(services):
                                     log.info("ASR speculative sent at silence onset (%.0fms)", silence_run)
                                 if not open_utt:
                                     if speech_run >= A.SILERO_ON_MS:
-                                        if assistant_active:
-                                            speech_run = 0.0
-                                            continue
+                                        # Keep VAD open while TTS is playing. The
+                                        # browser's echo canceller removes Molt's
+                                        # playback, and the client applies the
+                                        # wake-word gate before interrupting. If
+                                        # we suppress this here, saying “Molt”
+                                        # can never barge-in during an answer.
                                         buf.extend(pre_roll)
                                         total += sum(len(f) for f in pre_roll)
                                         pre_roll.clear()
