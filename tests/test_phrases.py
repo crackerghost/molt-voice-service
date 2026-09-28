@@ -25,6 +25,17 @@ class TestSpeechSentence(unittest.TestCase):
         self.assertIn("डॉक्यूमेंट", out)
         self.assertNotIn("एल ई टी", out)
 
+    def test_duplicate_html_tag_label_is_collapsed(self):
+        out = speech_sentence('<html> tag page ko start karta hai.')
+        self.assertIn("एचटीएमएल टैग", out)
+        self.assertNotIn("टैग टैग", out)
+
+    def test_duplicate_technical_heading_is_collapsed(self):
+        self.assertNotIn("हेड हेड", speech_sentence("Head: head mein metadata hota hai."))
+
+    def test_natural_emphasis_is_preserved(self):
+        self.assertIn("बहुत बहुत", speech_sentence("बहुत बहुत अच्छा।"))
+
     def test_numbers_convert(self):
         out = speech_sentence("error 404 mila")
         self.assertIn("चार", out)

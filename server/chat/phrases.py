@@ -28,6 +28,18 @@ _HINDI_NUMS = {
     40: "चालीस", 50: "पचास", 60: "साठ", 70: "सत्तर", 80: "अस्सी", 90: "नब्बे", 100: "सौ",
 }
 
+# LLM headings and HTML preservation can both produce adjacent technical
+# labels ("head: head...", "<html> tag..."). Collapse only this narrow set;
+# natural emphasis such as "बहुत बहुत" or "धीरे धीरे" must remain intact.
+_TECH_REPEAT_RE = re.compile(
+    r"(?<!\S)(टैग्स|टैग|हेड|बॉडी|एचटीएमएल|सीएसएस|एट्रिब्यूट्स|एट्रिब्यूट|"
+    r"एलिमेंट्स|एलिमेंट|पेज|कोड)(?:\s+\1)+(?!\S)"
+)
+
+
+def collapse_technical_repeats(text: str) -> str:
+    return _TECH_REPEAT_RE.sub(r"\1", text or "")
+
 
 def convert_numbers_to_hindi(text: str) -> str:
     """Convert numeric digits to spoken Hindi words so OmniVoice never fails on ASCII numbers."""
@@ -62,6 +74,7 @@ def speech_sentence(sent: str, complete: bool = True) -> str:
     sent = _naturalize(sent)
     sent = convert_numbers_to_hindi(sent)
     sent = _devanagari_only(sent)
+    sent = collapse_technical_repeats(sent)
     if not sent:
         return ""
     if complete and sent[-1] not in "।?!.":

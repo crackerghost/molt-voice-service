@@ -491,11 +491,6 @@ def chat_worker(
             if (is_greeting and sent_count >= cfg.greeting_max) or sent_count >= cfg.max_chat_sentences:
                 producer_stop.set()
                 break
-        if (not emitted_text or (llm_error and not emitted_audio)) and not (stop_evt is not None and stop_evt.is_set()) and inline_count[0] == 0:
-            fallback = "अरे, आवाज़ साफ़ नहीं आ पाई। एक बार फिर से बोल दो।"
-            out_q.put(("text", fallback))
-            _ship_window(fallback, min(num_step, cfg.first_window_step), watch=False)
-            emitted_audio = True
         if window and not (stop_evt is not None and stop_evt.is_set()):
             steps = min(num_step, cfg.first_window_step) if not emitted_audio else num_step
             _ship_window(" ".join(window), steps, raw_text=_take_raw())
@@ -510,10 +505,21 @@ def chat_worker(
         if (inline_board and inline_count[0] > 0 and spoken_chars < 60
                 and not llm_error and not (stop_evt is not None and stop_evt.is_set())):
             narration = _narrate_board()
+            if not narration:
+                narration = "बोर्ड पर विज़ुअल रेडी है। अब इसे स्टेप बाय स्टेप समझते हैं।"
             if narration:
                 out_q.put(("text", narration))
                 _ship_window(narration, num_step, watch=False)
                 emitted_audio = True
+                emitted_text = True
+        # Only a genuinely empty LLM turn gets the recovery line. Drain inline
+        # tools first: a tool-only answer is a valid board turn, not mishearing.
+        if (not turn_texts and inline_count[0] == 0
+                and not (stop_evt is not None and stop_evt.is_set())):
+            fallback = "अरे, आवाज़ साफ़ नहीं आ पाई। एक बार फिर से बोल दो।"
+            out_q.put(("text", fallback))
+            _ship_window(fallback, min(num_step, cfg.first_window_step), watch=False)
+            emitted_audio = True
         # Whole-turn board: ONE rich planner call on the full reply, fired
         # while audio still drains so its ~1s hides inside playback.
         # With inline boards on, this is strictly a fallback: it runs only

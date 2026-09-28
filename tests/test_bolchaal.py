@@ -17,6 +17,7 @@ class ConversionTests(unittest.TestCase):
         self.assertIn("टाइम", _naturalize("समय लगेगा"))
         self.assertIn("प्रोसेस", _naturalize("प्रक्रिया समझो"))
         self.assertIn("इम्पोर्टेन्ट", _naturalize("यह महत्त्वपूर्ण टॉपिक है"))
+        self.assertIn("फर्स्ट स्टेप", _naturalize("पहला कदम टैग का नाम लिखना है"))
 
     def test_formal_imperatives(self):
         self.assertIn("बताओ", _naturalize("बताइए क्या हुआ"))
