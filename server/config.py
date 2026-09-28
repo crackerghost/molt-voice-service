@@ -204,11 +204,15 @@ class VoiceConfig:
         speed_excited = float(os.environ.get("VOICE_EXCITED_SPEED", "1.02"))
         speed_dramatic = float(os.environ.get("VOICE_DRAMATIC_SPEED", "0.98"))
         speed_long = float(os.environ.get("VOICE_LONG_SPEED", "0.99"))
+        num_step = int(os.environ.get("VOICE_NUM_STEP", "6"))
         first_window_chars = int(os.environ.get("VOICE_FIRST_WINDOW_CHARS", "64"))
         min_window_chars = int(os.environ.get("VOICE_MIN_WINDOW_CHARS", "55"))
         first_window_step = int(os.environ.get("VOICE_FIRST_STEP", "5"))
         filler_threshold_ms = int(os.environ.get("VOICE_FILLER_THRESHOLD_MS", "900"))
+        filler_enabled = os.environ.get("VOICE_FILLER_ENABLED", "0") != "0"
+        filler_mode = os.environ.get("VOICE_FILLER_MODE", "off").strip().lower() or "off"
         if delivery_profile == "natural":
+            num_step = max(5, min(num_step, 8))
             default_speed = min(default_speed, 1.08)
             speed_excited = min(speed_excited, 1.03)
             speed_dramatic = max(speed_dramatic, 0.97)
@@ -217,6 +221,13 @@ class VoiceConfig:
             min_window_chars = max(min_window_chars, 55)
             first_window_step = max(5, min(first_window_step, 6))
             filler_threshold_ms = max(filler_threshold_ms, 900)
+            # A filler WAV occupies the same client playback queue as the real
+            # answer. On a realtime GPU it therefore adds latency instead of
+            # hiding it. Natural delivery keeps fillers off unless a deployment
+            # explicitly opts back in with VOICE_NATURAL_FILLER=1.
+            if os.environ.get("VOICE_NATURAL_FILLER", "0") != "1":
+                filler_enabled = False
+                filler_mode = "off"
 
         def _pause(key: str, dflt: float) -> float:
             try:
@@ -262,7 +273,7 @@ class VoiceConfig:
             ),
             model_name=os.environ.get("OMNIVOICE_MODEL", "k2-fsa/OmniVoice"),
             sample_rate=int(os.environ.get("VOICE_SAMPLE_RATE", "24000")),
-            num_step=int(os.environ.get("VOICE_NUM_STEP", "6")),
+            num_step=num_step,
             tts_temperature=float(os.environ.get("VOICE_TEMPERATURE", "0.3")),
             default_speed=default_speed,
             step_min=int(os.environ.get("VOICE_STEP_MIN", "4")),
@@ -319,11 +330,9 @@ class VoiceConfig:
             filler_dir=_resolve_path(
                 os.environ.get("VOICE_FILLER_DIR", "assets/fillers"), root
             ),
-            filler_enabled=os.environ.get("VOICE_FILLER_ENABLED", "1") != "0",
+            filler_enabled=filler_enabled,
             filler_threshold_ms=filler_threshold_ms,
-            filler_mode=(
-                os.environ.get("VOICE_FILLER_MODE", "slow").strip().lower() or "slow"
-            ),
+            filler_mode=filler_mode,
             filler_pick_enabled=os.environ.get("VOICE_FILLER_PICK", "1") != "0",
             filler_pick_model=(
                 os.environ.get("VOICE_FILLER_PICK_MODEL", "qwen/qwen3.8-27b").strip()

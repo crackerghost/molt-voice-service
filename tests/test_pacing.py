@@ -36,6 +36,7 @@ class TestNaturalProfile(unittest.TestCase):
             "VOICE_API_DEVICE": "cpu",
             "VOICE_DELIVERY_PROFILE": "natural",
             "VOICE_SPEED": "1.15",
+            "VOICE_NUM_STEP": "32",
             "VOICE_EXCITED_SPEED": "1.12",
             "VOICE_DRAMATIC_SPEED": "0.92",
             "VOICE_LONG_SPEED": "0.96",
@@ -43,10 +44,13 @@ class TestNaturalProfile(unittest.TestCase):
             "VOICE_MIN_WINDOW_CHARS": "28",
             "VOICE_FIRST_STEP": "4",
             "VOICE_FILLER_THRESHOLD_MS": "500",
+            "VOICE_FILLER_ENABLED": "1",
+            "VOICE_FILLER_MODE": "slow",
         }
         with patch.dict(os.environ, env, clear=True):
             cfg = VoiceConfig.from_env(Path("."))
         self.assertEqual(cfg.default_speed, 1.08)
+        self.assertEqual(cfg.num_step, 8)
         self.assertEqual(cfg.speed_excited, 1.03)
         self.assertEqual(cfg.speed_dramatic, 0.97)
         self.assertEqual(cfg.speed_long, 0.98)
@@ -54,6 +58,21 @@ class TestNaturalProfile(unittest.TestCase):
         self.assertEqual(cfg.min_window_chars, 55)
         self.assertEqual(cfg.first_window_step, 5)
         self.assertEqual(cfg.filler_threshold_ms, 900)
+        self.assertFalse(cfg.filler_enabled)
+        self.assertEqual(cfg.filler_mode, "off")
+
+    def test_natural_profile_allows_explicit_filler_opt_in(self):
+        env = {
+            "VOICE_API_DEVICE": "cpu",
+            "VOICE_DELIVERY_PROFILE": "natural",
+            "VOICE_FILLER_ENABLED": "1",
+            "VOICE_FILLER_MODE": "slow",
+            "VOICE_NATURAL_FILLER": "1",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            cfg = VoiceConfig.from_env(Path("."))
+        self.assertTrue(cfg.filler_enabled)
+        self.assertEqual(cfg.filler_mode, "slow")
 
     def test_natural_profile_caps_slow_first_window(self):
         env = {
