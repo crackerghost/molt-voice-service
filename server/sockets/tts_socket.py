@@ -167,13 +167,18 @@ def make_ws_tts(services):
                             system_prompt += (
                                 "\n\nSTUDENT NAME: The learner's exact display name is "
                                 + speaker_name
-                                + ". Address them with this exact name when appropriate."
+                                + ". नाम हर जवाब में मत लो। सामान्य जवाब में नाम छोड़ दो।"
+                                + " कभी-कभी ही नाम लेकर बोलो, जैसे बात समझाते समय '"
+                                + speaker_name
+                                + ", ध्यान दो' या जब आवाज़ साफ़ समझ न आई हो तब '"
+                                + speaker_name
+                                + ", ज़रा फिर से बोलो'। एक ही जवाब में नाम एक बार से ज़्यादा मत लो।"
                             )
                             if speaker_pronunciation:
                                 system_prompt += (
-                                    " For speech, pronounce that name as "
+                                    " बोलते समय नाम का उच्चारण ऐसे करो: "
                                     + speaker_pronunciation
-                                    + ". Never spell out or repeat the word 'name'."
+                                    + ". नाम को स्पेल मत करो और 'नाम' शब्द दोहराकर मत बोलो।"
                                 )
                     messages = [{"role": "system", "content": system_prompt}, *history]
 
