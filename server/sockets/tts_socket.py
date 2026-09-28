@@ -159,6 +159,22 @@ def make_ws_tts(services):
                     if screen and str(screen.get("image") or screen.get("b64") or "").strip():
                         need_screen = True
                     system_prompt = LLM_SYSTEM_PROMPT if _LLM_PERSONA_CUSTOM else LLM_SYSTEM_SHORT
+                    speaker = data.get("speaker_profile")
+                    if isinstance(speaker, dict):
+                        speaker_name = str(speaker.get("name") or "").strip()[:80]
+                        speaker_pronunciation = str(speaker.get("pronunciation") or "").strip()[:80]
+                        if speaker_name:
+                            system_prompt += (
+                                "\n\nSTUDENT NAME: The learner's exact display name is "
+                                + speaker_name
+                                + ". Address them with this exact name when appropriate."
+                            )
+                            if speaker_pronunciation:
+                                system_prompt += (
+                                    " For speech, pronounce that name as "
+                                    + speaker_pronunciation
+                                    + ". Never spell out or repeat the word 'name'."
+                                )
                     messages = [{"role": "system", "content": system_prompt}, *history]
 
                     if screen:
