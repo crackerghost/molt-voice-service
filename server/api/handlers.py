@@ -59,6 +59,8 @@ def make_api_config(services):
             "step_max": cfg.step_max,
             "temperature": cfg.tts_temperature,
             "speed": cfg.default_speed,
+            "delivery_profile": cfg.delivery_profile,
+            "filler_threshold_ms": cfg.filler_threshold_ms,
             "sample_rate": cfg.sample_rate,
             "device": cfg.device,
             "dtype": cfg.dtype,

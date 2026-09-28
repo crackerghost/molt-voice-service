@@ -124,18 +124,15 @@ class TTSEngine:
         total * index/n_chars, which lands inside words (clicks, robotic
         chops) because chars are not uniform duration. The TTS model already
         renders interior commas with its own prosody when fed full clauses,
-        so we only add: trailing breath for ending punctuation + small
-        inter-window gap so back-to-back windows don't start instantly.
+        so we only add a short trailing breath for ending punctuation.
+        Unfinished windows receive no synthetic silence; their fade/pad is
+        already enough to join them without creating a perceptible gap.
         """
         total = len(wav)
         if total == 0 or not text:
             return wav
         t = text.strip()
-        gap = 0.08  # inter-window gap so next window never starts instantly
-        if t:
-            pause = self.config.pause_seconds.get(t[-1])
-            if pause is not None:
-                gap = max(pause, gap)
+        gap = self.config.pause_seconds.get(t[-1], 0.0) if t else 0.0
         n = int(gap * self.config.sample_rate)
         if n <= 0:
             return wav

@@ -21,6 +21,7 @@ from server.llm.providers import LLMRetryable
 log = logging.getLogger("voice_api")
 
 SENT_END_RE = re.compile(r"[।?!.\n]")
+CLAUSE_BREAK_RE = re.compile(r"[,;:]")
 
 
 def cut_phrase(buf: str, max_chars: int) -> tuple[str, str]:
@@ -29,6 +30,25 @@ def cut_phrase(buf: str, max_chars: int) -> tuple[str, str]:
     if cut > 0:
         return window[:cut].strip(), (window[cut + 1 :] + buf[max_chars:]).lstrip()
     return window.strip(), buf[max_chars:].lstrip()
+
+
+def natural_stream_cut(buf: str, target_chars: int) -> tuple[str, str]:
+    """Cut a live phrase at a human pause, with a bounded latency fallback.
+
+    The old 40-character hard cut regularly restarted TTS halfway through an
+    intonation arc.  Wait for a comma/semicolon/colon after the target, but
+    never beyond a small hard limit; the fallback still cuts on a whole word.
+    """
+    target = max(64, int(target_chars))
+    if len(buf) < target:
+        return "", buf
+    hard = max(target + 20, int(target * 1.35))
+    for match in CLAUSE_BREAK_RE.finditer(buf, target - 1, min(len(buf), hard)):
+        cut = match.end()
+        return buf[:cut].strip(), buf[cut:].lstrip()
+    if len(buf) < hard:
+        return "", buf
+    return cut_phrase(buf, hard)
 
 
 def llm_stream_phrases(
@@ -147,12 +167,13 @@ def llm_stream_phrases(
                                 yielded = True
                                 yield sent, True
                             continue
-                        if len(buf) >= phrase_chars:
-                            phrase, buf = cut_phrase(buf, phrase_chars)
+                        if len(buf) >= max(64, phrase_chars):
+                            phrase, remainder = natural_stream_cut(buf, phrase_chars)
                             if phrase:
+                                buf = remainder
                                 yielded = True
                                 yield phrase, False
-                            continue
+                                continue
                         break
             tail = buf.strip()
             if tail:

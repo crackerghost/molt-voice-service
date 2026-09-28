@@ -106,7 +106,7 @@ def clause_units(sent: str, piece_max: int = 110) -> list[str]:
             if tail:
                 # Merge fragments shorter than a clause into the previous
                 # piece instead of a solo robotic window.
-                if len(tail) < 30 and out and len(out[-1]) + 1 + len(tail) <= piece_max + 30:
+                if len(tail) < 30 and out and len(out[-1]) + 1 + len(tail) <= piece_max:
                     out[-1] = f"{out[-1]} {tail}".strip()
                 else:
                     out.append(tail)
@@ -130,7 +130,7 @@ def clause_units(sent: str, piece_max: int = 110) -> list[str]:
                 cur = w
         if cur:
             # Avoid a dangling 1-2 word tail as its own window.
-            if len(cur) < 30 and final and len(final[-1]) + 1 + len(cur) <= piece_max + 30:
+            if len(cur) < 30 and final and len(final[-1]) + 1 + len(cur) <= piece_max:
                 final[-1] = f"{final[-1]} {cur}".strip()
             else:
                 final.append(cur)

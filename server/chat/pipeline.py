@@ -416,7 +416,9 @@ def chat_worker(
     try:
         from server.chat.phrases import clause_units as _default_units  # noqa: F401 (kept for parity)
 
-        piece_max = max(60, min(150, cfg.window_char_cap))
+        piece_max = max(80, min(150, cfg.window_char_cap))
+        first_target = max(64, cfg.first_window_chars)
+        min_target = max(55, cfg.min_window_chars)
         window: list[str] = []
         raw_window: list[str] = []
         window_chars = 0
@@ -458,31 +460,18 @@ def chat_worker(
                 window.append(piece)
                 window_chars += len(piece)
                 if not emitted_audio:
-                    if window_chars >= cfg.first_window_chars:
+                    # A complete sentence is already a natural first window.
+                    # For an unfinished stream, wait for the clause-aware LLM
+                    # cut and ship it whole; never cut the same phrase again at
+                    # an arbitrary character count here.
+                    if sentence_done or window_chars >= first_target:
                         text_to_speak = " ".join(window)
-                        if sentence_done or len(text_to_speak) <= cfg.first_window_chars:
-                            window, window_chars = [], 0
-                        elif len(text_to_speak) > cfg.first_window_chars:
-                            words = text_to_speak.split()
-                            cut_text = ""
-                            for w in words:
-                                if len(cut_text) + len(w) + 1 <= cfg.first_window_chars:
-                                    cut_text = (cut_text + " " + w).strip()
-                                else:
-                                    break
-                            if not cut_text:
-                                cut_text = words[0]
-                            remainder = text_to_speak[len(cut_text):].strip()
-                            window = remainder.split() if remainder else []
-                            window_chars = sum(len(w) for w in window)
-                            text_to_speak = cut_text
-                        else:
-                            window, window_chars = [], 0
+                        window, window_chars = [], 0
                         _ship_window(text_to_speak, min(num_step, cfg.first_window_step), raw_text=_take_raw())
                         emitted_audio = True
                 else:
-                    if window_chars >= cfg.min_window_chars and (
-                        sentence_done or window_chars >= cfg.min_window_chars * 2
+                    if window_chars >= min_target and (
+                        sentence_done or window_chars >= min_target * 2
                     ):
                         _ship_window(" ".join(window), num_step, raw_text=_take_raw())
                         window, window_chars = [], 0

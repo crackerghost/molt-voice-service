@@ -124,12 +124,16 @@ class TestInsertPauses(unittest.TestCase):
         result = self.engine.insert_pauses(wav, "नमस्ते")
         self.assertEqual(len(result), 1000)
 
-    def test_comma_adds_pause(self):
+    def test_trailing_comma_adds_pause(self):
         wav = self.np.ones(1000, dtype=self.np.float32)
-        text = "नमस्ते, कैसे हो"
+        text = "नमस्ते,"
         result = self.engine.insert_pauses(wav, text)
-        # Should be longer due to pause insertion
         self.assertGreater(len(result), 1000)
+
+    def test_unfinished_window_has_no_forced_gap(self):
+        wav = self.np.ones(1000, dtype=self.np.float32)
+        result = self.engine.insert_pauses(wav, "अब इसका अगला हिस्सा")
+        self.assertEqual(len(result), 1000)
 
 
 if __name__ == "__main__":

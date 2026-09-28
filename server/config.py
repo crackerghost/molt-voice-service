@@ -105,13 +105,13 @@ class VoiceConfig:
     # TTS model
     model_name: str = "k2-fsa/OmniVoice"
     sample_rate: int = 24000
-    num_step: int = 8
+    num_step: int = 6
     tts_temperature: float = 0.3
-    default_speed: float = 1.2
+    default_speed: float = 1.06
     step_min: int = 4
     step_max: int = 64
     greeting_max: int = 2
-    first_window_chars: int = 40
+    first_window_chars: int = 64
     jitter_frames: int = 1
     tts_language: str = "hi"
     tts_pad_s: float = 0.02
@@ -119,9 +119,10 @@ class VoiceConfig:
     device: str = "cpu"
     dtype: str = "fp32"  # 'fp16' | 'fp32' (string; converted to torch dtype at the engine boundary)
     # pacing
-    speed_excited: float = 1.12
-    speed_dramatic: float = 0.92
-    speed_long: float = 0.96
+    delivery_profile: str = "natural"
+    speed_excited: float = 1.02
+    speed_dramatic: float = 0.98
+    speed_long: float = 0.99
     speed_long_chars: int = 110
     speed_min: float = 0.3
     speed_max: float = 2.0
@@ -154,7 +155,7 @@ class VoiceConfig:
     window_char_cap: int = 150
     min_window_chars: int = 55
     max_chat_sentences: int = 6
-    first_window_step: int = 2
+    first_window_step: int = 5
     max_history: int = 8
     pause_seconds: dict = field(default_factory=dict)
     # vision / screen
@@ -167,7 +168,7 @@ class VoiceConfig:
     # filler maskers (pre-generated cloned-voice wavs masking LLM+TTS latency)
     filler_dir: Path = field(default_factory=lambda: Path("assets/fillers"))
     filler_enabled: bool = True
-    filler_threshold_ms: int = 500
+    filler_threshold_ms: int = 900
     filler_mode: str = "slow"  # always | slow | off
     # cheap smart pick: parallel qwen call (~100ms) choosing the clip per
     # turn; falls back to random on timeout/failure, never blocks voice
@@ -191,6 +192,32 @@ class VoiceConfig:
         effort_raw = os.environ.get("DEEPSEEK_REASONING_EFFORT", "").strip().lower()
         effort = effort_raw if effort_raw in ("low", "medium", "high", "xhigh", "max") else ""
 
+        # Existing GPU deployments may still carry the original fast/excited
+        # values in their private .env.  The natural profile intentionally
+        # clamps those legacy values so a pull + restart is enough to receive
+        # the production delivery fix.  Set the profile to ``legacy`` to opt
+        # back into unrestricted per-variable tuning.
+        delivery_profile = os.environ.get("VOICE_DELIVERY_PROFILE", "natural").strip().lower()
+        if delivery_profile not in ("natural", "legacy"):
+            delivery_profile = "natural"
+        default_speed = float(os.environ.get("VOICE_SPEED", "1.06"))
+        speed_excited = float(os.environ.get("VOICE_EXCITED_SPEED", "1.02"))
+        speed_dramatic = float(os.environ.get("VOICE_DRAMATIC_SPEED", "0.98"))
+        speed_long = float(os.environ.get("VOICE_LONG_SPEED", "0.99"))
+        first_window_chars = int(os.environ.get("VOICE_FIRST_WINDOW_CHARS", "64"))
+        min_window_chars = int(os.environ.get("VOICE_MIN_WINDOW_CHARS", "55"))
+        first_window_step = int(os.environ.get("VOICE_FIRST_STEP", "5"))
+        filler_threshold_ms = int(os.environ.get("VOICE_FILLER_THRESHOLD_MS", "900"))
+        if delivery_profile == "natural":
+            default_speed = min(default_speed, 1.08)
+            speed_excited = min(speed_excited, 1.03)
+            speed_dramatic = max(speed_dramatic, 0.97)
+            speed_long = max(speed_long, 0.98)
+            first_window_chars = max(first_window_chars, 64)
+            min_window_chars = max(min_window_chars, 55)
+            first_window_step = max(5, min(first_window_step, 6))
+            filler_threshold_ms = max(filler_threshold_ms, 900)
+
         def _pause(key: str, dflt: float) -> float:
             try:
                 return float(os.environ.get(f"VOICE_PAUSE_{key}", str(dflt)))
@@ -199,12 +226,12 @@ class VoiceConfig:
 
         scale = float(os.environ.get("VOICE_PAUSE_SCALE", "1.0"))
         pauses = {
-            ",": round(_pause("COMMA", 0.35) * scale, 3),
-            ";": round(_pause("SEMI", 0.3) * scale, 3),
-            ".": round(_pause("FULL", 0.4) * scale, 3),
-            "?": round(_pause("QUESTION", 0.4) * scale, 3),
-            "!": round(_pause("EXCLAM", 0.45) * scale, 3),
-            "।": round(_pause("DANDA", 0.45) * scale, 3),
+            ",": round(_pause("COMMA", 0.03) * scale, 3),
+            ";": round(_pause("SEMI", 0.05) * scale, 3),
+            ".": round(_pause("FULL", 0.16) * scale, 3),
+            "?": round(_pause("QUESTION", 0.18) * scale, 3),
+            "!": round(_pause("EXCLAM", 0.16) * scale, 3),
+            "।": round(_pause("DANDA", 0.16) * scale, 3),
         }
         web_dir = root / "web" / "ui" / "dist"
         raw_origins = os.environ.get("VOICE_ALLOWED_ORIGINS", "*").strip() or "*"
@@ -235,22 +262,23 @@ class VoiceConfig:
             ),
             model_name=os.environ.get("OMNIVOICE_MODEL", "k2-fsa/OmniVoice"),
             sample_rate=int(os.environ.get("VOICE_SAMPLE_RATE", "24000")),
-            num_step=int(os.environ.get("VOICE_NUM_STEP", "8")),
+            num_step=int(os.environ.get("VOICE_NUM_STEP", "6")),
             tts_temperature=float(os.environ.get("VOICE_TEMPERATURE", "0.3")),
-            default_speed=float(os.environ.get("VOICE_SPEED", "1.2")),
+            default_speed=default_speed,
             step_min=int(os.environ.get("VOICE_STEP_MIN", "4")),
             step_max=int(os.environ.get("VOICE_STEP_MAX", "64")),
             greeting_max=int(os.environ.get("VOICE_GREETING_MAX", "2")),
-            first_window_chars=int(os.environ.get("VOICE_FIRST_WINDOW_CHARS", "40")),
+            first_window_chars=first_window_chars,
             jitter_frames=max(0, int(os.environ.get("VOICE_JITTER_FRAMES", "1"))),
             tts_language=os.environ.get("VOICE_TTS_LANGUAGE", "hi").strip().lower() or "hi",
             tts_pad_s=float(os.environ.get("VOICE_TTS_PAD_S", "0.02")),
             tts_fade_s=float(os.environ.get("VOICE_TTS_FADE_S", "0.02")),
             device=device,
             dtype=dtype,
-            speed_excited=float(os.environ.get("VOICE_EXCITED_SPEED", "1.12")),
-            speed_dramatic=float(os.environ.get("VOICE_DRAMATIC_SPEED", "0.92")),
-            speed_long=float(os.environ.get("VOICE_LONG_SPEED", "0.96")),
+            delivery_profile=delivery_profile,
+            speed_excited=speed_excited,
+            speed_dramatic=speed_dramatic,
+            speed_long=speed_long,
             speed_long_chars=int(os.environ.get("VOICE_LONG_CHARS", "110")),
             speed_min=float(os.environ.get("VOICE_SPEED_MIN", "0.3")),
             speed_max=float(os.environ.get("VOICE_SPEED_MAX", "2.0")),
@@ -278,9 +306,9 @@ class VoiceConfig:
             stream_max_chars=int(os.environ.get("VOICE_STREAM_MAX_CHARS", "75")),
             stream_window=max(1, int(os.environ.get("VOICE_STREAM_WINDOW", "3"))),
             window_char_cap=int(os.environ.get("VOICE_WINDOW_CHARS", "150")),
-            min_window_chars=int(os.environ.get("VOICE_MIN_WINDOW_CHARS", "55")),
+            min_window_chars=min_window_chars,
             max_chat_sentences=int(os.environ.get("VOICE_MAX_SENTENCES", "6")),
-            first_window_step=max(2, min(32, int(os.environ.get("VOICE_FIRST_STEP", "2")))),
+            first_window_step=max(2, min(32, first_window_step)),
             max_history=int(os.environ.get("VOICE_MAX_HISTORY", "8")),
             pause_seconds=pauses,
             vision_timeout=float(os.environ.get("VOICE_VISION_TIMEOUT", "90.0")),
@@ -292,7 +320,7 @@ class VoiceConfig:
                 os.environ.get("VOICE_FILLER_DIR", "assets/fillers"), root
             ),
             filler_enabled=os.environ.get("VOICE_FILLER_ENABLED", "1") != "0",
-            filler_threshold_ms=int(os.environ.get("VOICE_FILLER_THRESHOLD_MS", "500")),
+            filler_threshold_ms=filler_threshold_ms,
             filler_mode=(
                 os.environ.get("VOICE_FILLER_MODE", "slow").strip().lower() or "slow"
             ),
