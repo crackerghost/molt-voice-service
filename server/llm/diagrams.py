@@ -155,13 +155,15 @@ def should_generate(text: str, history: list[dict] | None, enabled: bool) -> boo
 def _step_prompt(step_text: str, topic: str, tag: str = "w", whole: bool = False) -> list[dict]:
     limit = 1500 if whole else 600
     system = (
-        "You are a visual teaching assistant drawing ONE step of an explanation "
-        "on a shared whiteboard. DEFAULT TO DRAWING: any explanation with "
-                "parts, steps, sequence, cause-effect, comparison, timeline, "
-                "hierarchy, a system, a definition with 2+ components, or how "
-                "something works deserves a board — processes, frontend/backend/"
-                "data flow, architectures included. When in doubt, DRAW; a visual "
-                "almost always helps grounding. Return no tool call for pure "
+        "You are a visual teaching assistant deciding whether to draw ONE step of an explanation "
+        "on a shared whiteboard. DECISION GATE: use the drawing tool only when a visual "
+                "materially improves understanding — for example a multi-step process, "
+                "three or more relationships, architecture/data flow, spatial structure, "
+                "timeline, comparison table, hierarchy, or code/example that learners need "
+                "to inspect. If the spoken answer is already clear on its own, return no tool "
+                "call. Never draw merely because the answer is educational, defines a term, "
+                "or contains two facts. An explicit request to draw, or a spoken promise to "
+                "look at the board/screen/diagram, always requires a drawing. Return no tool call for pure "
                 "greetings, thanks, acks, confirmations, goodbyes, small talk, "
                 "bare yes/no answers with no explanation, unstructured "
                 "opinions, jokes, meta talk, or narration of a window/app move "
@@ -262,8 +264,8 @@ def _step_prompt(step_text: str, topic: str, tag: str = "w", whole: bool = False
     )
     if whole:
         system = system.replace(
-            "drawing ONE step of an explanation",
-            "drawing the FULL board for one complete explanation",
+            "deciding whether to draw ONE step of an explanation",
+            "deciding whether to draw the FULL board for one complete explanation",
         ).replace(
             "tool call for THIS step only, mixing whatever explains best: "
             "3-6 compact nodes with arrows",

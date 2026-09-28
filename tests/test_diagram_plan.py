@@ -44,6 +44,9 @@ class PromptTests(unittest.TestCase):
     def test_window_prompt_unchanged(self):
         msgs = _step_prompt("s" * 900, "topic", "w1")
         self.assertIn("ONE step", msgs[0]["content"])
+        self.assertIn("DECISION GATE", msgs[0]["content"])
+        self.assertIn("return no tool call", msgs[0]["content"])
+        self.assertNotIn("When in doubt, DRAW", msgs[0]["content"])
         self.assertIn("STEP:", msgs[1]["content"])
         self.assertLessEqual(len(msgs[1]["content"]), 200 + 600 + 64)
 

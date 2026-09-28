@@ -327,17 +327,29 @@ def make_ws_tts(services):
 
                         await websocket.send_text(json.dumps({"type": "start", "sample_rate": cfg.sample_rate, "text": text,
                                                               "turn_id": turn_id, "client_turn_id": client_turn_id}))
-                        # Expand-only protocol event. Older clients ignore it;
-                        # new clients open a calm board shell before Molt can
-                        # reference the visual, eliminating the blank-screen gap.
-                        if should_diagram:
-                            await websocket.send_text(json.dumps({
-                                "type": "board_ready",
-                                "status": "planning",
-                                "turn_id": turn_id,
-                                "client_turn_id": client_turn_id,
-                            }))
                         frames = 0
+                        board_announced = False
+
+                        async def _send_diagram(diagram_payload: dict) -> None:
+                            """Open the board only after the agent actually drew.
+
+                            `should_diagram` only means the visual judge should run;
+                            it is not a decision to show a screen.  Announcing here
+                            prevents an empty preview on ordinary voice-only turns.
+                            """
+                            nonlocal board_announced
+                            if stop_evt.is_set():
+                                return
+                            if not board_announced:
+                                await websocket.send_text(json.dumps({
+                                    "type": "board_ready",
+                                    "status": "drawing",
+                                    "turn_id": diagram_payload.get("turn_id", turn_id),
+                                    "client_turn_id": diagram_payload.get("client_turn_id", client_turn_id),
+                                }))
+                                board_announced = True
+                            await websocket.send_text(json.dumps({"type": "diagram", **diagram_payload}))
+
                         # Filler masker: a random pre-generated "ruko" clip goes out FIRST
                         # on every chat turn, so any client (bundled UI or external)
                         # plays something instantly while the LLM+TTS catches up.
@@ -422,8 +434,7 @@ def make_ws_tts(services):
                             elif kind == "window":
                                 await websocket.send_text(json.dumps({"type": "window", **payload}))
                             elif kind == "diagram":
-                                if not stop_evt.is_set():
-                                    await websocket.send_text(json.dumps({"type": "diagram", **payload}))
+                                await _send_diagram(payload)
                             elif kind == "board_status":
                                 await websocket.send_text(json.dumps({"type": "board_status", **payload}))
                             elif kind == "os_action":
@@ -464,7 +475,7 @@ def make_ws_tts(services):
                                         if kind2 is None:
                                             break  # timeout — no more chalk coming
                                         if kind2 == "diagram":
-                                            await websocket.send_text(json.dumps({"type": "diagram", **payload2}))
+                                            await _send_diagram(payload2)
                                             continue
                                         if kind2 == "done":
                                             break
