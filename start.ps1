@@ -64,11 +64,27 @@ function Stop-OldServer([int]$p) {
 }
 
 # --- first run: venv + deps (mirrors start.sh; resemblyzer is optional) ---
+function Test-VenvSsl([string]$py) {
+  try { & $py -c 'import ssl' 2>$null; return ($LASTEXITCODE -eq 0) }
+  catch { return $false }
+}
 if (-not (Test-Path $Python)) {
-  Write-Host 'First run - creating omnivoice-env (Python 3.11) and installing deps...'
+  Write-Host 'First run - creating omnivoice-env and installing deps...'
   if (Get-Command uv -ErrorAction SilentlyContinue) {
     uv python install 3.11
     uv venv --python 3.11 omnivoice-env
+    if (-not (Test-VenvSsl $Python)) {
+      # WDAC/Application Control on some machines blocks uv-managed Pythons
+      # under AppData (import _ssl -> "An Application Control policy has
+      # blocked this file"). Rebuild from an allowed system Python instead.
+      Write-Host 'uv-managed Python is blocked (ssl import failed) - rebuilding env from system Python...'
+      Remove-Item -Recurse -Force omnivoice-env -ErrorAction SilentlyContinue
+      $sysPy = @('C:\Python314\python.exe', 'C:\Python313\python.exe', 'C:\Python311\python.exe') |
+        Where-Object { Test-Path $_ } | Select-Object -First 1
+      if (-not $sysPy) { $sysPy = (Get-Command python -ErrorAction SilentlyContinue).Source }
+      if (-not $sysPy) { Write-Error 'No working system Python found.'; exit 1 }
+      uv venv --python $sysPy omnivoice-env
+    }
     # resemblyzer needs C++ Build Tools on Windows; without it the
     # speaker gate auto-disables, so fall back to a filtered install.
     uv pip install --python $Python -r requirements.txt 2>$null
@@ -128,7 +144,7 @@ while ($true) {
   if (-not $ready) {
     Write-Host "Server failed to become healthy (restart #$restartCount). Last log lines:" -ForegroundColor Red
     if (Test-Path $Log)    { Get-Content $Log    -Tail 25 | ForEach-Object { Write-Host "  $_" } }
-    if (Test-Path $LogErr) { Get-Content $LogErr -Tail 25 | ForEach-Object { Write-Host "  $_" } -ForegroundColor Red }
+    if (Test-Path $LogErr) { Get-Content $LogErr -Tail 25 | ForEach-Object { Write-Host "  $_" -ForegroundColor Red } }
     Stop-Job $tailJob -ErrorAction SilentlyContinue; Remove-Job $tailJob -Force -ErrorAction SilentlyContinue
     if ($proc.HasExited) { Write-Host "Server process exited (code $($proc.ExitCode)) - restarting in 5s..." -ForegroundColor Red }
     Start-Sleep 5
