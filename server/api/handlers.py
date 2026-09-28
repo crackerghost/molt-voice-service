@@ -105,7 +105,7 @@ def make_api_config(services):
             "diagram_enabled": cfg.diagram_enabled,
             "diagram_model": cfg.diagram_model,
             "diagram_max_tokens": cfg.diagram_max_tokens,
-            "diagram_plan_mode": getattr(cfg, "diagram_plan_mode", "turn"),
+            "diagram_plan_mode": getattr(cfg, "diagram_plan_mode", "window"),
             "diagram_inline": getattr(cfg, "diagram_inline", True),
             "diagram_gate": _os.environ.get("DIAGRAM_GATE", "auto"),
             "diagram_done_grace_s": _os.environ.get("DIAGRAM_DONE_GRACE_S", "6"),

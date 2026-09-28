@@ -4,6 +4,7 @@
 
 let ctx = null;
 let speakAnalyser = null;
+let speakCapture = null;
 let micAnalyser = null;
 let micStream = null;
 let micSrc = null;
@@ -12,6 +13,7 @@ let speakConnected = false;
 
 function ensureNodes() {
   if (!speakAnalyser) speakAnalyser = ctx.createAnalyser();
+  if (!speakCapture) speakCapture = ctx.createMediaStreamDestination();
   speakAnalyser.fftSize = 2048;
   speakAnalyser.smoothingTimeConstant = 0.55;
   if (!micAnalyser) micAnalyser = ctx.createAnalyser();
@@ -61,8 +63,15 @@ export const engine = {
     source.connect(speakAnalyser);
     if (!speakConnected) {
       speakAnalyser.connect(ctx.destination);
+      speakAnalyser.connect(speakCapture);
       speakConnected = true;
     }
+  },
+  /* Stable room-audio capture track. The Campus SFU publishes this only from
+     the current Molt conductor, while local speakers keep using destination. */
+  getSpeakTrack() {
+    this.unlock();
+    return speakCapture?.stream?.getAudioTracks?.()[0] || null;
   },
   readSpeak() {
     return read(speakAnalyser);
@@ -161,7 +170,7 @@ export const engine = {
       micSrc.connect(tap);
       return { ok: true };
     } catch (e) {
-      stopTap();
+      this.stopTap();
       return {
         ok: false,
         error: e instanceof Error ? e.message : String(e),

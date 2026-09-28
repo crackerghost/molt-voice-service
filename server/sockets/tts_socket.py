@@ -325,7 +325,18 @@ def make_ws_tts(services):
                             daemon=True,
                         ).start()
 
-                        await websocket.send_text(json.dumps({"type": "start", "sample_rate": cfg.sample_rate, "text": text}))
+                        await websocket.send_text(json.dumps({"type": "start", "sample_rate": cfg.sample_rate, "text": text,
+                                                              "turn_id": turn_id, "client_turn_id": client_turn_id}))
+                        # Expand-only protocol event. Older clients ignore it;
+                        # new clients open a calm board shell before Molt can
+                        # reference the visual, eliminating the blank-screen gap.
+                        if should_diagram:
+                            await websocket.send_text(json.dumps({
+                                "type": "board_ready",
+                                "status": "planning",
+                                "turn_id": turn_id,
+                                "client_turn_id": client_turn_id,
+                            }))
                         frames = 0
                         # Filler masker: a random pre-generated "ruko" clip goes out FIRST
                         # on every chat turn, so any client (bundled UI or external)

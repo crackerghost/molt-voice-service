@@ -238,12 +238,25 @@ def chat_worker(
 
     win_seq = [0]
     turn_texts: list[str] = []  # whole-turn board plan: 1 rich call/turn
-    plan_mode = getattr(cfg, "diagram_plan_mode", "turn") or "turn"
+    plan_mode = getattr(cfg, "diagram_plan_mode", "window") or "window"
 
     def _diagram_watch(n: int, win_text: str, raw_text: str = "") -> None:
+        def _status(stage: str, detail: str = "") -> None:
+            try:
+                out_q.put(("board_status", {
+                    "stage": stage,
+                    "detail": detail[:200],
+                    "window_n": n,
+                    "turn_id": (diagram_ctx or {}).get("turn_id", ""),
+                    "client_turn_id": (diagram_ctx or {}).get("client_turn_id", ""),
+                }))
+            except Exception:
+                pass
+
         try:
             if stop_evt is not None and stop_evt.is_set():
                 return
+            _status("planning", f"speech window {n}")
             d = deps.diagram_generate(
                 diagram_ctx["key"], raw_text or win_text, diagram_ctx.get("topic", ""),
                 stop_evt, client=http_client, url=diagram_ctx.get("diagram_url") or cfg_url,
@@ -253,6 +266,8 @@ def chat_worker(
                 id_prefix=f"w{n}", turn_id=diagram_ctx.get("turn_id", ""),
             )
             if not d or (stop_evt is not None and stop_evt.is_set()):
+                if not (stop_evt is not None and stop_evt.is_set()):
+                    _status("empty", "continuing without a visual for this sentence")
                 return
             out_q.put(("diagram", {
                 "window_n": n, "mode": "append",
@@ -260,9 +275,11 @@ def chat_worker(
                 "turn_id": diagram_ctx.get("turn_id", ""),
                 "client_turn_id": diagram_ctx.get("client_turn_id", ""),
             }))
+            _status("planned", f"{len(d['elements'])} elements")
             _labels = [str(e.get("text", "") or e.get("code", "") or e.get("type", ""))[:28] for e in d["elements"] if e.get("type") != "arrow"][:4]
             log.info("Diagram watcher: window #%d -> %d element(s) [%s]", n, len(d["elements"]), " | ".join(_labels))
         except Exception as e:  # noqa: BLE001 — board must never break voice
+            _status("skipped", str(e))
             log.warning("Diagram watcher window #%d skipped: %s", n, e)
 
     def _board_promised(text: str) -> bool:

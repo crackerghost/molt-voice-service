@@ -43,7 +43,7 @@ def create_app(config=None) -> FastAPI:
     except Exception:
         _rev = "unknown"
     log.info("voice-service build %s | llm=%s | diagrams=%s/%s inline=%s", _rev, config.llm_model,
-             config.diagram_model, getattr(config, "diagram_plan_mode", "turn"),
+             config.diagram_model, getattr(config, "diagram_plan_mode", "window"),
              getattr(config, "diagram_inline", False))
     services = build_services(config)
 

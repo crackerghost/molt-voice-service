@@ -56,17 +56,17 @@ class PromptTests(unittest.TestCase):
 
 
 class PlanModeTests(unittest.TestCase):
-    def test_default_is_turn(self):
+    def test_default_is_window_for_live_speech_sync(self):
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("DIAGRAM_PLAN_MODE", None)
             cfg = VoiceConfig.from_env(".")
-        self.assertEqual(cfg.diagram_plan_mode, "turn")
+        self.assertEqual(cfg.diagram_plan_mode, "window")
 
-    def test_window_override_and_bad_value(self):
-        with patch.dict(os.environ, {"DIAGRAM_PLAN_MODE": "window"}, clear=False):
-            self.assertEqual(VoiceConfig.from_env(".").diagram_plan_mode, "window")
-        with patch.dict(os.environ, {"DIAGRAM_PLAN_MODE": "bogus"}, clear=False):
+    def test_turn_override_and_bad_value(self):
+        with patch.dict(os.environ, {"DIAGRAM_PLAN_MODE": "turn"}, clear=False):
             self.assertEqual(VoiceConfig.from_env(".").diagram_plan_mode, "turn")
+        with patch.dict(os.environ, {"DIAGRAM_PLAN_MODE": "bogus"}, clear=False):
+            self.assertEqual(VoiceConfig.from_env(".").diagram_plan_mode, "window")
 
 
 class PlannerGuardTests(unittest.TestCase):

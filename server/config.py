@@ -140,7 +140,9 @@ class VoiceConfig:
     deepseek_thinking: str = "disabled"
     deepseek_reasoning_effort: str = ""
     diagram_enabled: bool = True
-    diagram_plan_mode: str = "turn"  # turn = 1 rich board/turn; window = 1 small board/window
+    # Speech-synced deltas are the production default. Turn mode stays as a
+    # reversible fallback for deployments that prefer one richer, later board.
+    diagram_plan_mode: str = "window"  # window = live deltas; turn = one late rich board
     diagram_inline: bool = False  # single brain (answer draws itself); off = sidecar planners from the reply text
     diagram_model: str = ""
     diagram_max_tokens: int = 1000
@@ -218,9 +220,9 @@ class VoiceConfig:
             filler_pick_timeout_s = float(os.environ.get("VOICE_FILLER_PICK_TIMEOUT_S", "0.3") or 0.3)
         except ValueError:
             filler_pick_timeout_s = 0.3
-        _plan_mode = os.environ.get("DIAGRAM_PLAN_MODE", "turn").strip().lower() or "turn"
+        _plan_mode = os.environ.get("DIAGRAM_PLAN_MODE", "window").strip().lower() or "window"
         if _plan_mode not in ("turn", "window"):
-            _plan_mode = "turn"
+            _plan_mode = "window"
         return cls(
             root=root,
             host=os.environ.get("VOICE_HOST", "127.0.0.1"),
