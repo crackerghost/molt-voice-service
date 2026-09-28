@@ -83,6 +83,10 @@ HINGLISH_TO_DEVANAGARI = {
     "keyboard": "कीबोर्ड", "screen": "स्क्रीन", "laptop": "लैपटॉप",
     "mobile": "मोबाइल", "developer": "डेवलपर", "design": "डिज़ाइन",
     "practice": "प्रैक्टिस", "english": "इंग्लिश", "science": "साइंस",
+    # Common Hinglish teaching words — keep them in Hindi instead of letting
+    # the generic Latin phonetic fallback distort the retroflex sounds.
+    "padhna": "पढ़ना", "padhne": "पढ़ने", "padho": "पढ़ो",
+    "seekhna": "सीखना", "seekhne": "सीखने", "seekho": "सीखो",
     "teacher": "टीचर", "student": "स्टूडेंट", "college": "कॉलेज",
     "class": "क्लास", "time": "टाइम", "video": "वीडियो",
     # ---- daily courtesy / reactions (rose-roz wale) ----
@@ -1986,6 +1990,15 @@ LATIN_TO_DEVANAGARI = {
 # spoken aloud is identical to the correct pronunciation, but the model
 # segments each part cleanly. Order matters: longest keys first.
 PRONUNCIATION_FIXES = {
+    # OmniVoice can flatten the ड़/ढ़ seam in these high-frequency tutor words;
+    # splitting the syllables keeps the intended "pढ़-na / seekh-na" clear.
+    "पढ़ना": "पढ़ ना",
+    "पढ़ने": "पढ़ ने",
+    "पढ़ो": "पढ़ो",
+    "सीखना": "सीख ना",
+    "सीखने": "सीख ने",
+    "सीखो": "सीखो",
+    "सीखेंगे": "सीखेंगे",
     # double-स family (स+स conjunct with matras — the model merges them)
     "जिससे": "जिस से",
     "इससे": "इस से",
