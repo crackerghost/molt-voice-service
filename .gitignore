@@ -12,8 +12,8 @@ omnivoice-env/
 # ===== Personal voice samples + generated audio =====
 # my_voice*.wav contain your recorded voice — keep them out of git.
 # Drop your own my_voice.wav (3-10 s clean clip) after cloning.
-*.wav
 
+ 
 # ===== Node / UI build (rebuild with: cd web/ui && npm run build) =====
 node_modules/
 web/ui/node_modules/

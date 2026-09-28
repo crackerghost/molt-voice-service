@@ -43,9 +43,12 @@ class TTSEngine:
         self.voice_prompt = None
 
     def load(self, ref_audio, ref_text):
+        # device_map=None on CPU: transformers' CUDA-allocator warmup runs
+        # for ANY non-None device_map and crashes on CPU-only torch builds.
+        device_map = None if self.config.device == "cpu" else self.config.device
         self.model = OmniVoice.from_pretrained(
             self.config.model_name,
-            device_map=self.config.device,
+            device_map=device_map,
             dtype=self.config.dtype,
         )
         self.voice_prompt = self.model.create_voice_clone_prompt(
