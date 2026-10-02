@@ -141,37 +141,40 @@ class TTSEngine:
         ) if total else wav
 
     def stream_chunks(self, text):
+        # This is a character limit, not a UTF-8 byte limit. Hindi graphemes
+        # commonly use 3+ bytes, so byte-counting at 75 split ordinary clauses
+        # into 20-25 character clips and forced a fresh diffusion run mid-sentence.
+        limit = max(1, int(self.config.stream_max_chars))
         clauses = re.split(r"(?<=[।?!.])\s*", text)
         chunks, current = [], ""
         for clause in clauses:
             clause = clause.strip()
             if not clause:
                 continue
-            if len((current + clause).encode("utf-8")) <= self.config.stream_max_chars:
-                current += clause
+            candidate = f"{current} {clause}".strip() if current else clause
+            if len(candidate) <= limit:
+                current = candidate
                 continue
             if current:
                 chunks.append(current)
                 current = ""
+            if len(clause) <= limit:
+                current = clause
+                continue
             for word in clause.split(" "):
                 word = word.strip()
                 if not word:
                     continue
                 candidate = (current + " " + word).strip() if current else word
-                if len(candidate.encode("utf-8")) <= self.config.stream_max_chars:
+                if len(candidate) <= limit:
                     current = candidate
                     continue
                 if current:
                     chunks.append(current)
-                    current = ""
-                buffer = ""
-                for char in word:
-                    if len((buffer + char).encode("utf-8")) <= self.config.stream_max_chars:
-                        buffer += char
-                    else:
-                        chunks.append(buffer)
-                        buffer = char
-                current = buffer
+                # Preserve whole Hindi words and their combining vowel marks.
+                # A single unusually long token may exceed the soft cap, but
+                # splitting its Unicode code points would corrupt pronunciation.
+                current = word
         if current:
             chunks.append(current)
         return chunks

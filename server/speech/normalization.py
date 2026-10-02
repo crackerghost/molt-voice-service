@@ -1990,6 +1990,12 @@ LATIN_TO_DEVANAGARI = {
 # spoken aloud is identical to the correct pronunciation, but the model
 # segments each part cleanly. Order matters: longest keys first.
 PRONUNCIATION_FIXES = {
+    # Spell common technical acronyms as their individual letter names, matching
+    # the reference clip's "एच-टी-एम-एल, सी-एस-एस" delivery.
+    "एचटीएमएल": "एच टी एम एल",
+    "सीएसएस": "सी एस एस",
+    "एपीआई": "ए पी आई",
+    "एसडीई": "एस डी ई",
     # OmniVoice can flatten the ड़/ढ़ seam in these high-frequency tutor words;
     # splitting the syllables keeps the intended "pढ़-na / seekh-na" clear.
     "पढ़ना": "पढ़ ना",

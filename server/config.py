@@ -150,7 +150,7 @@ class VoiceConfig:
     os_director_enabled: bool = True
     os_director_block_s: float = 5.0
     # streaming / chat shaping
-    stream_max_chars: int = 75
+    stream_max_chars: int = 150
     stream_window: int = 3
     window_char_cap: int = 150
     min_window_chars: int = 55
@@ -319,7 +319,7 @@ class VoiceConfig:
             diagram_max_tokens=int(os.environ.get("DIAGRAM_MAX_TOKENS", "1000")),
             os_director_enabled=os.environ.get("OS_DIRECTOR_EVENTS", "1") == "1",
             os_director_block_s=float(os.environ.get("OS_DIRECTOR_BLOCK_S", "5") or 5),
-            stream_max_chars=int(os.environ.get("VOICE_STREAM_MAX_CHARS", "75")),
+            stream_max_chars=int(os.environ.get("VOICE_STREAM_MAX_CHARS", "150")),
             stream_window=max(1, int(os.environ.get("VOICE_STREAM_WINDOW", "3"))),
             window_char_cap=int(os.environ.get("VOICE_WINDOW_CHARS", "150")),
             min_window_chars=min_window_chars,

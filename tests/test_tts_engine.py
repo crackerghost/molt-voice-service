@@ -53,12 +53,13 @@ class TestStreamChunks(unittest.TestCase):
         chunks = self.engine.stream_chunks(text)
         self.assertGreaterEqual(len(chunks), 1)
 
-    def test_respects_max_bytes(self):
-        # Create a long text that exceeds max_bytes
+    def test_respects_max_characters_without_splitting_hindi_words(self):
+        # Create a long text that exceeds max_chars
         text = "बहुत लंबा टेक्स्ट " * 100
         chunks = self.engine.stream_chunks(text)
         for chunk in chunks:
-            self.assertLessEqual(len(chunk.encode("utf-8")), 75)
+            self.assertLessEqual(len(chunk), 75)
+            self.assertFalse(chunk.endswith("बहु"))
 
     def test_empty_string_returns_empty_list(self):
         chunks = self.engine.stream_chunks("")
