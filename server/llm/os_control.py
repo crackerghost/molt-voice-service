@@ -16,7 +16,7 @@ import threading
 
 APPS = ("whiteboard", "browser", "notes", "code", "help", "tutor")
 ZONES = ("left", "right", "tl", "tr", "bl", "br")
-MAX_ACTIONS = 6
+MAX_ACTIONS = 12
 
 # Ops that need {"app"} / {"app","zone"} / {"target"}.
 _APP_OPS = {
@@ -24,8 +24,8 @@ _APP_OPS = {
     "maximize_app", "restore_app", "tile_app", "float_app",
 }
 _BROWSER_OPS = {"browser_back", "browser_forward", "browser_new_tab", "browser_reload", "browser_close_tab"}
-_NOARG_OPS = {"tile_grid"}
-_CODE_OPS = {"code_create", "code_write", "code_edit"}
+_NOARG_OPS = {"tile_grid", "code_run"}
+_CODE_OPS = {"code_create", "code_write", "code_edit", "code_open", "code_delete", "code_mkdir", "code_rmdir", "code_search", "code_set_module"}
 OPS = _APP_OPS | _BROWSER_OPS | _NOARG_OPS | {"browser_navigate", "note_add", "clear_board"} | _CODE_OPS
 # Code payloads ride the same tool call as window moves — give those turns a
 # bigger token budget (a teaching-sized file dwarfs the usual 400).
@@ -58,11 +58,13 @@ OS_CONTROL_TOOL = {
                             "target": {"type": "string", "description": "browser_navigate only: URL or search words."},
                             "title": {"type": "string", "description": "note_add only: note title."},
                             "body": {"type": "string", "description": "note_add only: note body."},
-                            "path": {"type": "string", "description": "code_create/write/edit only: relative file path like index.html or js/app.js."},
+                            "path": {"type": "string", "description": "code_create/write/edit/open/delete only: relative file path like index.html or js/app.js. code_mkdir/rmdir: folder path like css or js."},
                             "content": {"type": "string", "description": "code_create/write only: full file content (create) or replacement/appended code (write). Keep teaching-sized."},
                             "mode": {"type": "string", "enum": ["overwrite", "append"], "description": "code_write only: replace the file (default) or append to it."},
                             "find": {"type": "string", "description": "code_edit only: exact existing snippet to replace (first match)."},
                             "replace": {"type": "string", "description": "code_edit only: replacement snippet."},
+                            "query": {"type": "string", "description": "code_search only: text to find across all project files (the studio highlights matches)."},
+                            "module": {"type": "string", "enum": ["html_css_js", "mernstack"], "description": "code_set_module only: teaching environment selected for this practical example."},
                         },
                         "required": ["op"],
                     },
@@ -89,7 +91,10 @@ _DIRECTOR_SYSTEM = (
     "(a) the learner asks for an app, a website, docs, a video, a search, a note, "
     "or the help center — or names something to show; "
     "(b) the learner asks you to TEACH a topic that is better shown than told — "
-    "for coding, markup, styling, debugging or file topics open the code editor "
+    "for coding, markup, styling, debugging or file topics, first ask whether they "
+    "want a practical editor demo. NEVER open or write code until the OS snapshot "
+    "says code.practice_allowed is true; an explanation alone is not permission. "
+    "When permission is true, open the code editor "
     "(create a small runnable example) and tile it beside the board; when a live "
     "demo, docs page or video teaches it better, open the browser to it. Keep "
     "teaching surfaces to what the topic actually needs. A pure definition, "
@@ -104,16 +109,31 @@ _DIRECTOR_SYSTEM = (
     "needed). The named site or search words ARE the target — use them verbatim "
     "as browser_navigate target. NEVER open an empty browser and leave the "
     "search for later, and NEVER split one request across turns. CODE moves "
-    "drive the Code editor and open it by themselves: code_create makes a NEW "
+    "drive the Code editor and open it by themselves: code_set_module must be the "
+    "first code move and must choose html_css_js for browser UI, HTML, CSS, DOM and "
+    "vanilla JavaScript; choose mernstack when React, Node, Express, MongoDB, an API, "
+    "backend, database, auth or full-stack behavior is needed. code_create makes a NEW "
     "file (path like index.html or js/app.js + full content, then it opens in "
     "the editor), code_write replaces (or appends to) a file's content, "
-    "code_edit swaps ONE exact snippet (find -> replace, first match wins). "
+    "code_edit swaps ONE exact snippet (find -> replace, first match wins), "
+    "code_open focuses an existing file, code_delete removes one file, "
+    "code_mkdir creates a folder, code_rmdir removes a folder tree, "
+    "code_search highlights a query across every file, code_run rebuilds the live preview. "
+    "For html_css_js frontend scaffolds (counter, todo, landing page, game): emit the full "
+    "file set in ONE call — index.html + css/styles.css + js/app.js. Style "
+    "with Tailwind utility classes by default (the preview loads the Tailwind "
+    "CDN automatically); write REAL custom CSS into css/styles.css as well so "
+    "both are connected. Only when the learner explicitly says vanilla/plain "
+    "CSS do you skip Tailwind classes and style purely in the CSS file. "
+    "For mernstack examples, emit a small client plus server structure and explain "
+    "that this classroom preview runs the client only; keep server files visible for teaching. "
     "Keep code teaching-sized and runnable in a plain browser preview (HTML/CSS/"
-    "vanilla JS — no imports, no build step). After code moves, the tutor "
-    "should point the learner at the preview. The OS snapshot may name the "
-    "open code file (code.file with its language): when the learner says 'this "
+    "vanilla JS — no imports, no build step, no backend: the preview runs the "
+    "frontend only). After code moves, the tutor "
+    "should point the learner at the preview. The OS snapshot names the "
+    "open code file (code.file) plus the project listing (code.files): when the learner says 'this "
     "code', 'this file', or 'it' without naming a path, use that file for "
-    "code_write/code_edit. lesson is the active curriculum lesson id — "
+    "code_write/code_edit; use code.files to avoid recreating files that exist. lesson is the active curriculum lesson id — "
     "context only, never an action. open_app before acting on a "
     "closed app. Close or minimize a window only when it is in the way or the "
     "learner asked — they cannot restore it themselves. "
@@ -164,6 +184,9 @@ _OS_REQUEST_RE = re.compile(
     r"\bhelp\s*cent(re|er)\b|\bopen\s*help\b|"
     r"\breload\b|\brefresh\b|"
     r"side\s*by\s*side|\btile\b|\bgoogle\b|\byoutube\b|\bwebsite\b|\bdocs?\b|\bvideo\b|"
+    r"\bcounter\b|\btodo(\s*app|\s*list)?\b|\blanding(\s*page)?\b|\bportfolio\b|"
+    r"\bcalculator\b|\bquiz(\s*app)?\b|\bclone\b|"
+    r"\b(create|make|build|bana)\b.{0,30}\b(counter|todo|app|page|site|website|game|ui|project)\b|"
     # Explicit code-write imperatives (verb + code/file noun, either order).
     # Bare "code" is deliberately NOT here: "explain this code / ye code kya
     # karta hai" are teaching/screen questions, not desktop moves.
@@ -233,7 +256,9 @@ _CODE_WRITE_RE = re.compile(
     r"\bwrite\b.{0,30}\bcode\b|"
     r"\bedit\b.{0,30}\b(code|files?)\b|"
     r"\bcreate\b.{0,30}\b(files?|code)\b|\b(files?|code)\b.{0,30}\b(create|edit)\b|"
-    r"\bfix\b.{0,30}\bcode\b)",
+    r"\bfix\b.{0,30}\bcode\b|"
+    r"\bcounter\b|\btodo(\s*app|\s*list)?\b|\blanding(\s*page)?\b|\bportfolio\b|"
+    r"\b(create|make|build|bana)\b.{0,30}\b(counter|todo|app|page|site|website|game|ui|project)\b)",
     re.IGNORECASE,
 )
 
@@ -244,6 +269,27 @@ def wants_code_action(text: str) -> bool:
     if len(clean) < 8:
         return False
     return bool(_CODE_WRITE_RE.search(clean))
+
+
+_CODING_TOPIC_RE = re.compile(
+    r"(html|css|javascript|java\s*script|typescript|react|node(?:\.js)?|express|mongo(?:db)?|mern|"
+    r"frontend|front\s*end|backend|back\s*end|full\s*stack|api|dom|कोड|एचटीएमएल|सीएसएस|"
+    r"जावास्क्रिप्ट|रिएक्ट|नोड|एक्सप्रेस|मोंगो|फ्रंट.?एंड|बैक.?एंड|फुल.?स्टैक)", re.IGNORECASE
+)
+_MERN_MODULE_RE = re.compile(
+    r"(mern|react|node(?:\.js)?|express|mongo(?:db)?|backend|back\s*end|full\s*stack|api|database|auth|"
+    r"रिएक्ट|नोड|एक्सप्रेस|मोंगो|बैक.?एंड|फुल.?स्टैक|एपीआई|डेटाबेस|ऑथ)", re.IGNORECASE
+)
+
+
+def is_coding_topic(text: str) -> bool:
+    """True for coding questions, including explanation-only turns."""
+    return bool(_CODING_TOPIC_RE.search((text or "").strip()))
+
+
+def select_code_module(text: str) -> str:
+    """Pick the smallest practical environment for the requested example."""
+    return "mernstack" if _MERN_MODULE_RE.search((text or "").strip()) else "html_css_js"
 
 
 _APP_NAMES = {
@@ -307,6 +353,20 @@ def describe_action(action: dict) -> str:
         return f"{how} '{action.get('path', '')}'"
     if op == "code_edit":
         return f"edited '{action.get('path', '')}'"
+    if op == "code_open":
+        return f"opened '{action.get('path', '')}' in the editor"
+    if op == "code_delete":
+        return f"deleted file '{action.get('path', '')}'"
+    if op == "code_mkdir":
+        return f"created folder '{action.get('path', '')}'"
+    if op == "code_rmdir":
+        return f"removed folder '{action.get('path', '')}'"
+    if op == "code_search":
+        return f"searched the project for '{action.get('query', '')}'"
+    if op == "code_set_module":
+        return f"selected the {action.get('module', 'coding')} environment"
+    if op == "code_run":
+        return "ran the live preview"
     if op == "clear_board":
         return "cleared the board"
     return f"ran {op}"
@@ -387,15 +447,35 @@ def sanitize_os_snapshot(raw) -> dict:
         steps = 0
     if steps > 0:
         snap["whiteboardSteps"] = min(steps, 999)
-    # Open code file (what the learner looks at) + active curriculum lesson.
+    # Open code file (what the learner looks at) + full project listing.
     # The director uses code.file to resolve "this code / this file / it"
-    # without demanding a path; lesson is context only, never an action.
+    # without demanding a path, and code.files to avoid recreating files
+    # that exist; lesson is context only, never an action.
     code = raw.get("code")
     if isinstance(code, dict):
         path = _clean_code_path(code.get("file"))
         lang = re.sub(r"[^A-Za-z#+_-]", "", str(code.get("lang") or ""))[:24]
+        entry = {}
         if path:
-            snap["code"] = {"file": path, **({"lang": lang} if lang else {})}
+            entry["file"] = path
+            if lang:
+                entry["lang"] = lang
+        files = code.get("files")
+        if isinstance(files, list):
+            listed = []
+            for f in files[:40]:
+                cp = _clean_code_path(f)
+                if cp and cp not in listed:
+                    listed.append(cp)
+            if listed:
+                entry["files"] = listed
+        module = str(code.get("module") or "").strip().lower()
+        if module in {"html_css_js", "mernstack"}:
+            entry["module"] = module
+        entry["practice_allowed"] = bool(code.get("practice_allowed"))
+        entry["practice_pending"] = bool(code.get("practice_pending"))
+        if entry:
+            snap["code"] = entry
     lesson = raw.get("lesson")
     if isinstance(lesson, dict):
         lid = str(lesson.get("id") or "").strip()[:80]
@@ -441,6 +521,14 @@ def sanitize_action(raw) -> dict | None:
             action["body"] = body
         return action
     if op in _CODE_OPS:
+        if op == "code_search":
+            query = str(raw.get("query") or raw.get("target") or "").strip()[:120]
+            if not query:
+                return None
+            return {"op": op, "query": query}
+        if op == "code_set_module":
+            module = str(raw.get("module") or "").strip().lower()
+            return {"op": op, "module": module} if module in {"html_css_js", "mernstack"} else None
         path = _clean_code_path(raw.get("path"))
         if not path:
             return None
@@ -463,6 +551,10 @@ def sanitize_action(raw) -> dict | None:
             if not find.strip():
                 return None
             return {"op": op, "path": path, "find": find, "replace": replace}
+        if op in ("code_open", "code_delete"):
+            return {"op": op, "path": path}
+        if op in ("code_mkdir", "code_rmdir"):
+            return {"op": op, "path": path.rstrip("/")}
     return None
 
 
@@ -497,7 +589,9 @@ def plan_os_actions(
     Best-effort: [] means 'no action', never an error. Single attempt, no
     retry — a dropped director call only skips window moves, never voice.
     """
-    if not key or not should_direct(user_text):
+    code_snapshot = snapshot.get("code") if isinstance(snapshot, dict) else {}
+    practical_allowed = bool(code_snapshot.get("practice_allowed")) if isinstance(code_snapshot, dict) else False
+    if not key or (not should_direct(user_text) and not practical_allowed):
         return []
     if stop_evt is not None and stop_evt.is_set():
         return []
@@ -555,6 +649,24 @@ def plan_os_actions(
             action = sanitize_action(raw)
             if action:
                 out.append(action)
+        code_actions = [a for a in out if a.get("op") in _CODE_OPS]
+        code = snapshot.get("code") if isinstance(snapshot, dict) else {}
+        practice_allowed = bool(code.get("practice_allowed")) if isinstance(code, dict) else False
+        code_window_actions = [a for a in out if a.get("app") == "code" and a.get("op") in _APP_OPS]
+        if not practice_allowed and (code_actions or code_window_actions):
+            # The tutor must ask before opening the editor. This second gate
+            # keeps an over-eager director from mutating the learner's screen.
+            return [
+                a for a in out
+                if a.get("op") not in _CODE_OPS
+                and not (a.get("app") == "code" and a.get("op") in _APP_OPS)
+            ]
+        if code_actions and not any(a.get("op") == "code_set_module" for a in code_actions):
+            out = [{"op": "code_set_module", "module": select_code_module(user_text)}, *out]
+        elif code_actions:
+            selected = select_code_module(user_text)
+            module_action = {"op": "code_set_module", "module": selected}
+            out = [module_action, *[a for a in out if a.get("op") != "code_set_module"]]
         return out
     finally:
         _OS_SEMAPHORE.release()

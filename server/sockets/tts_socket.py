@@ -44,6 +44,7 @@ def make_ws_tts(services):
         sanitize_os_snapshot as sanitize_os,
         should_direct as should_direct,
         wants_code_action as wants_code_action,
+        is_coding_topic as is_coding_topic,
         wants_os_action as wants_os_action,
     )
     from server.llm.prompts import (
@@ -154,6 +155,7 @@ def make_ws_tts(services):
                     ]
                     if not history or history[-1]["role"] != "user":
                         history.append({"role": "user", "content": text})
+                    history_coding = " ".join(str(m.get("content") or "") for m in history[-4:])
                     need_screen = should_include_screen_context(text, history, routing_mode=cfg.screen_routing_mode)
                     screen = data.get("screen") if isinstance(data.get("screen"), dict) else None
                     if screen and str(screen.get("image") or screen.get("b64") or "").strip():
@@ -180,6 +182,23 @@ def make_ws_tts(services):
                                     + speaker_pronunciation
                                     + ". नाम को स्पेल मत करो और 'नाम' शब्द दोहराकर मत बोलो।"
                                 )
+                    client_code = (data.get("os") or {}).get("code") if isinstance(data.get("os"), dict) else {}
+                    practical_allowed = bool(client_code.get("practice_allowed")) if isinstance(client_code, dict) else False
+                    coding_context = is_coding_topic(text) or is_coding_topic(history_coding)
+                    if coding_context:
+                        if practical_allowed:
+                            system_prompt += (
+                                "\n\nCODING PRACTICAL MODE: The learner has explicitly agreed to see this in the editor. "
+                                "The OS director may select the best environment and build a teaching-sized example. "
+                                "Explain what you are doing while the editor updates."
+                            )
+                        else:
+                            system_prompt += (
+                                "\n\nCODING PRACTICAL GATE: Explain the coding concept normally, but do not claim that "
+                                "the editor opened and do not write or request code actions yet. Ask one natural, short "
+                                "follow-up in Hinglish: whether the learner wants you to show it practically in the editor. "
+                                "Only a clear yes/haan/show it/करो in a later turn authorizes the editor."
+                            )
                     messages = [{"role": "system", "content": system_prompt}, *history]
 
                     if screen:
@@ -272,21 +291,25 @@ def make_ws_tts(services):
                         out_q: queue.Queue = queue.Queue()
                         llm_client = services.runtime.provider_clients.llm()
                         os_snapshot = sanitize_os(data.get("os") if isinstance(data.get("os"), dict) else None)
+                        planning_text = text
+                        if practical_allowed and history_coding:
+                            planning_text = f"{history_coding[-600:]}\nLearner approval: {text}"
                         os_ctx = None
                         actions_done: list = []
-                        if cfg.os_director_enabled and key and wants_os_action(text):
+                        blocking_os_request = wants_os_action(text) or practical_allowed
+                        if cfg.os_director_enabled and key and blocking_os_request:
                             try:
                                 loop = asyncio.get_running_loop()
                                 actions_done = await asyncio.wait_for(
                                     loop.run_in_executor(
                                         None,
                                         lambda: plan_os(
-                                            key, text, os_snapshot, stop_evt=stop_evt,
+                                            key, planning_text, os_snapshot, stop_evt=stop_evt,
                                             client=llm_client,
                                             url=llm_cfg.get("url"),
                                             model=llm_cfg.get("diagram_model"),
                                             thinking=llm_cfg.get("diagram_thinking"),
-                                            max_tokens=CODE_DIRECTOR_TOKENS if wants_code_action(text) else 400,
+                                            max_tokens=CODE_DIRECTOR_TOKENS if (wants_code_action(text) or practical_allowed) else 400,
                                         ),
                                     ),
                                     timeout=cfg.os_director_block_s,
@@ -309,13 +332,13 @@ def make_ws_tts(services):
                             messages[0] = {"role": "system", "content": base + "\n\n" + os_ack_block(actions_done)}
                         else:
                             os_ctx = (
-                                {"key": key, "text": text, "snapshot": os_snapshot,
+                                {"key": key, "text": planning_text, "snapshot": os_snapshot,
                                  "client_turn_id": client_turn_id,
                                  "model": llm_cfg.get("diagram_model"),
                                  "url": llm_cfg.get("url"),
                                  "thinking": llm_cfg.get("diagram_thinking"),
-                                 "max_tokens": CODE_DIRECTOR_TOKENS if wants_code_action(text) else 400}
-                                if (cfg.os_director_enabled and key and should_direct(text)) else None
+                                 "max_tokens": CODE_DIRECTOR_TOKENS if (wants_code_action(text) or practical_allowed) else 400}
+                                if (cfg.os_director_enabled and key and (should_direct(text) or practical_allowed)) else None
                             )
                         should_diagram = (
                             not actions_done
