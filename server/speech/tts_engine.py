@@ -7,6 +7,7 @@ import re
 import sys
 import threading
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Callable
 
@@ -57,6 +58,8 @@ except OSError as exc:
     ) from exc
 
 from omnivoice import OmniVoice
+
+from server.gpu import gpu_generate_lock
 
 log = logging.getLogger("voice_api")
 
@@ -139,22 +142,32 @@ class TTSEngine:
             kwargs["speed"] = speed
         if temperature is not None:
             kwargs["class_temperature"] = temperature
-        if torch.cuda.is_available() and not self.gpu_warm["done"]:
-            torch.cuda.empty_cache()
+
+        # TTS and the local vision model share one accelerator. Vision already
+        # uses gpu_generate_lock; TTS must take the same lock or CUDA kernels
+        # from both models can overlap and intermittently fail (or OOM).
+        accelerator_lock = (
+            gpu_generate_lock
+            if self.config.device.startswith("cuda") or self.config.device == "mps"
+            else nullcontext()
+        )
         with self.generate_lock:
-            with torch.inference_mode():
-                outputs = self.model.generate(**kwargs)
-        if not outputs:
-            raise RuntimeError("OmniVoice returned no audio")
-        segments = []
-        for segment in outputs:
-            if hasattr(segment, "detach"):
-                segment = segment.detach()
-            if hasattr(segment, "cpu"):
-                segment = segment.cpu()
-            segments.append(np.asarray(segment, dtype=np.float32))
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+            with accelerator_lock:
+                if torch.cuda.is_available() and not self.gpu_warm["done"]:
+                    torch.cuda.empty_cache()
+                with torch.inference_mode():
+                    outputs = self.model.generate(**kwargs)
+                if not outputs:
+                    raise RuntimeError("OmniVoice returned no audio")
+                segments = []
+                for segment in outputs:
+                    if hasattr(segment, "detach"):
+                        segment = segment.detach()
+                    if hasattr(segment, "cpu"):
+                        segment = segment.cpu()
+                    segments.append(np.asarray(segment, dtype=np.float32))
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
         return segments[0] if len(segments) == 1 else np.concatenate(segments)
 
     def wav_bytes(self, samples):
