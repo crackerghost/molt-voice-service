@@ -111,7 +111,7 @@ class VoiceConfig:
     step_min: int = 4
     step_max: int = 64
     greeting_max: int = 2
-    first_window_chars: int = 64
+    first_window_chars: int = 100
     jitter_frames: int = 1
     tts_language: str = "hi"
     tts_pad_s: float = 0.02
@@ -205,7 +205,7 @@ class VoiceConfig:
         speed_dramatic = float(os.environ.get("VOICE_DRAMATIC_SPEED", "0.98"))
         speed_long = float(os.environ.get("VOICE_LONG_SPEED", "0.99"))
         num_step = int(os.environ.get("VOICE_NUM_STEP", "6"))
-        first_window_chars = int(os.environ.get("VOICE_FIRST_WINDOW_CHARS", "64"))
+        first_window_chars = int(os.environ.get("VOICE_FIRST_WINDOW_CHARS", "100"))
         min_window_chars = int(os.environ.get("VOICE_MIN_WINDOW_CHARS", "55"))
         first_window_step = int(os.environ.get("VOICE_FIRST_STEP", "5"))
         filler_threshold_ms = int(os.environ.get("VOICE_FILLER_THRESHOLD_MS", "900"))
@@ -217,7 +217,7 @@ class VoiceConfig:
             speed_excited = min(speed_excited, 1.03)
             speed_dramatic = max(speed_dramatic, 0.97)
             speed_long = max(speed_long, 0.98)
-            first_window_chars = max(first_window_chars, 64)
+            first_window_chars = max(first_window_chars, 100)
             min_window_chars = max(min_window_chars, 55)
             first_window_step = max(5, min(first_window_step, 6))
             filler_threshold_ms = max(filler_threshold_ms, 900)
