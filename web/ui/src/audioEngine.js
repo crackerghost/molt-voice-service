@@ -4,15 +4,22 @@
 
 let ctx = null;
 let speakAnalyser = null;
+let speakGain = null;
 let speakCapture = null;
 let micAnalyser = null;
 let micStream = null;
 let micSrc = null;
 let tap = null;
 let speakConnected = false;
+let speakMuted = false;
 
 function ensureNodes() {
   if (!speakAnalyser) speakAnalyser = ctx.createAnalyser();
+  if (!speakGain) {
+    speakGain = ctx.createGain();
+    speakGain.connect(speakAnalyser);
+  }
+  speakGain.gain.value = speakMuted ? 0 : 1;
   if (!speakCapture) speakCapture = ctx.createMediaStreamDestination();
   speakAnalyser.fftSize = 2048;
   speakAnalyser.smoothingTimeConstant = 0.55;
@@ -59,13 +66,21 @@ export const engine = {
   },
   /* Route a TTS buffer source through the "speaking" analyser to the speakers. */
   connectSpeak(source) {
-    if (!speakAnalyser) return;
-    source.connect(speakAnalyser);
+    if (!speakAnalyser || !speakGain) return;
+    source.connect(speakGain);
     if (!speakConnected) {
       speakAnalyser.connect(ctx.destination);
       speakAnalyser.connect(speakCapture);
       speakConnected = true;
     }
+  },
+  setSpeakMuted(muted) {
+    speakMuted = Boolean(muted);
+    if (!ctx) return;
+    if (!speakGain) ensureNodes();
+    const now = ctx.currentTime;
+    speakGain.gain.cancelScheduledValues(now);
+    speakGain.gain.setTargetAtTime(speakMuted ? 0 : 1, now, 0.015);
   },
   /* Stable room-audio capture track. The Campus SFU publishes this only from
      the current Molt conductor, while local speakers keep using destination. */
