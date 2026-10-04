@@ -137,5 +137,51 @@ class TestInsertPauses(unittest.TestCase):
         self.assertEqual(len(result), 1000)
 
 
+class TestAcceleratorCoordination(unittest.TestCase):
+    def test_cuda_tts_waits_for_shared_gpu_work(self):
+        import threading
+        import numpy as np
+
+        from server.gpu import gpu_generate_lock
+
+        engine = TTSEngine(
+            config=TTSConfig(
+                model_name="test",
+                device="cuda",
+                dtype=None,
+                sample_rate=24000,
+                temperature=0.3,
+                default_speed=1.0,
+                stream_max_chars=75,
+                first_window_step=2,
+                pause_seconds={},
+            ),
+            pronunciation_fix=lambda x: x,
+        )
+        engine.voice_prompt = object()
+        started = threading.Event()
+
+        class FakeModel:
+            def generate(self, **kwargs):
+                started.set()
+                return [np.zeros(8, dtype=np.float32)]
+
+        engine.model = FakeModel()
+        result = []
+        gpu_generate_lock.acquire()
+        worker = threading.Thread(
+            target=lambda: result.append(engine.generate("hello", 2, 1.0)),
+            daemon=True,
+        )
+        try:
+            worker.start()
+            self.assertFalse(started.wait(0.1), "TTS entered generate while the GPU was busy")
+        finally:
+            gpu_generate_lock.release()
+        worker.join(timeout=2)
+        self.assertFalse(worker.is_alive(), "TTS did not resume after shared GPU work finished")
+        self.assertTrue(started.is_set())
+        self.assertEqual(result[0].shape, (8,))
+
 if __name__ == "__main__":
     unittest.main()
