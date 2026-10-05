@@ -2,16 +2,61 @@
 
 import io
 import logging
+import os
 import re
+import sys
 import threading
 import time
 from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Callable
 
+# --- Windows DLL hardening (fixes intermittent libtorchaudio load failure) ---
+# `torch.ops.load_library("libtorchaudio.pyd")` needs torch's bundled CUDA
+# DLLs visible in the DLL search path. When launched via Start-Process
+# hidden / supervision loops the PATH-based lookup can fail even though an
+# interactive shell works. Register torch's lib dir explicitly, before any
+# torch/torchaudio import below.
+if os.name == "nt":
+    try:
+        import importlib.util as _ilu
+
+        _spec = _ilu.find_spec("torch")
+        if _spec and _spec.origin:
+            _torch_lib = os.path.join(os.path.dirname(_spec.origin), "lib")
+            if os.path.isdir(_torch_lib) and hasattr(os, "add_dll_directory"):
+                os.add_dll_directory(_torch_lib)
+    except Exception:
+        pass
+
 import numpy as np
 import soundfile as sf
 import torch
+
+try:
+    import torchaudio  # noqa: F401  (import early for a clear version check)
+    from torch import __version__ as _torch_v
+    from torchaudio import __version__ as _ta_v
+
+    if _torch_v.split("+")[0].split(".")[:2] != _ta_v.split("+")[0].split(".")[:2]:
+        print(
+            f"WARNING: torch ({_torch_v}) / torchaudio ({_ta_v}) major versions "
+            "differ — libtorchaudio may fail to load. Reinstall matched builds, e.g.: "
+            "uv pip install --python .\\omnivoice-env\\Scripts\\python.exe "
+            "'torch==2.11.0+cu126' 'torchaudio==2.11.0+cu126' "
+            "--index-url https://download.pytorch.org/whl/cu126",
+            file=sys.stderr,
+        )
+except OSError as exc:
+    raise OSError(
+        "Failed to load torchaudio native library (libtorchaudio.pyd). "
+        "This is usually a torch/torchaudio version mismatch or missing CUDA DLLs. "
+        f"Installed torch={getattr(torch, '__version__', '?')}. "
+        "Fix: uv pip install --python .\\omnivoice-env\\Scripts\\python.exe "
+        "'torch==<VER>+cu126' 'torchaudio==<VER>+cu126' with MATCHING <VER>, "
+        "--index-url https://download.pytorch.org/whl/cu126"
+    ) from exc
+
 from omnivoice import OmniVoice
 
 from server.gpu import gpu_generate_lock
