@@ -70,9 +70,36 @@ function Test-VenvSsl([string]$py) {
 }
 
 function Test-TorchImports([string]$py) {
-  $output = & $py -c 'import sys; from server.speech import tts_engine; import torch; import torchaudio; available = torch.cuda.is_available(); print("torch", torch.__version__, "torchaudio", torchaudio.__version__, "cuda", torch.version.cuda, "cuda_available", available); sys.exit(0 if torch.version.cuda and available else 2)' 2>&1
+  $prevAction = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  $tmp = Join-Path $env:TEMP ('torch_preflight_' + [guid]::NewGuid().ToString('N') + '.py')
+  # NOTE: written to a file (not `python -c '... "..." ...'`) because
+  # Windows PowerShell 5.1 strips inner double quotes when passing `-c`
+  # to native exes, which broke print("torch", ...) into print(torch, ...).
+  # sys.path insert: python puts the script's dir (TEMP) on sys.path[0],
+  # not the repo root, so `import server` needs the explicit root.
+  Set-Content -Path $tmp -Value @'
+import sys, warnings
+warnings.filterwarnings("ignore")
+sys.path.insert(0, r'__ROOT__')
+from server.speech import tts_engine
+import torch, torchaudio
+available = torch.cuda.is_available()
+print("torch", torch.__version__, "torchaudio", torchaudio.__version__, "cuda", torch.version.cuda, "cuda_available", available)
+sys.exit(0 if (torch.version.cuda and available) else 2)
+'@.Replace('__ROOT__', $PSScriptRoot) -Encoding Ascii
+  try {
+    $output = & $py $tmp 2>&1
+    $code = $LASTEXITCODE
+  } catch {
+    $output = $_.Exception.Message + "`n" + (($_.ErrorDetails.Message) | Out-String)
+    $code = 1
+  } finally {
+    $ErrorActionPreference = $prevAction
+    Remove-Item $tmp -ErrorAction SilentlyContinue
+  }
   return @{
-    ExitCode = $LASTEXITCODE
+    ExitCode = $code
     Output = ($output | Out-String).Trim()
   }
 }
@@ -113,8 +140,18 @@ if (-not (Test-Path $Python)) {
 # the API starts. Verify a working CUDA build before entering the restart loop.
 # Keep the GPU install intact and fail with actionable diagnostics; never
 # silently switch the requested GPU service to CPU or weaken application policy.
+# Opt-in CPU fallback: VOICE_ALLOW_CPU=1 skips the hard exit (slow but works).
 $torchCheck = Test-TorchImports $Python
 if ($torchCheck.ExitCode -ne 0) {
+  $allowCpu = ($env:VOICE_ALLOW_CPU -eq '1')
+  if ($allowCpu) {
+    Write-Host 'PyTorch GPU preflight failed - VOICE_ALLOW_CPU=1 set, continuing on CPU (slow).' -ForegroundColor Yellow
+    Write-Host $torchCheck.Output -ForegroundColor Yellow
+    $env:VOICE_API_DEVICE = 'cpu'
+    $env:ASR_DEVICE = 'cpu'
+    $env:ASR_COMPUTE = 'int8'
+    $env:VOICE_API_DTYPE = 'fp32'
+  } else {
   if ($torchCheck.Output -match '(?i)(caffe2_nvrtc\.dll|application control policy|blocked this file|WDAC|AppLocker)') {
     Write-Host 'Windows Application Control blocked a PyTorch CUDA DLL. GPU startup cannot continue until the official CUDA runtime is approved by the device policy.' -ForegroundColor Red
     Write-Host 'Ask the device administrator to review CodeIntegrity > Operational event 3077 and its correlated 3089 signature event for caffe2_nvrtc.dll.' -ForegroundColor Yellow
@@ -125,10 +162,14 @@ if ($torchCheck.ExitCode -ne 0) {
   }
   Write-Host 'PyTorch/Torchaudio GPU preflight failed; server startup was stopped to avoid endless unhealthy restarts:' -ForegroundColor Red
   Write-Host $torchCheck.Output -ForegroundColor Red
+  Write-Host 'To run slowly on CPU instead: $env:VOICE_ALLOW_CPU=1; ./start.ps1' -ForegroundColor Yellow
   exit 1
+  }
 }
-Write-Host "PyTorch/Torchaudio CUDA preflight passed: $($torchCheck.Output)" -ForegroundColor DarkGray
-$env:VOICE_API_DEVICE = 'cuda'
+if (-not ($env:VOICE_ALLOW_CPU -eq '1' -and $torchCheck.ExitCode -ne 0)) {
+  Write-Host "PyTorch/Torchaudio CUDA preflight passed: $($torchCheck.Output)" -ForegroundColor DarkGray
+  $env:VOICE_API_DEVICE = 'cuda'
+}
 
 # Start one server process; returns the Process object (PID).
 function Start-Server {
