@@ -68,6 +68,15 @@ function Test-VenvSsl([string]$py) {
   try { & $py -c 'import ssl' 2>$null; return ($LASTEXITCODE -eq 0) }
   catch { return $false }
 }
+
+function Test-TorchImports([string]$py) {
+  $output = & $py -c 'import sys; from server.speech import tts_engine; import torch; import torchaudio; available = torch.cuda.is_available(); print("torch", torch.__version__, "torchaudio", torchaudio.__version__, "cuda", torch.version.cuda, "cuda_available", available); sys.exit(0 if torch.version.cuda and available else 2)' 2>&1
+  return @{
+    ExitCode = $LASTEXITCODE
+    Output = ($output | Out-String).Trim()
+  }
+}
+
 if (-not (Test-Path $Python)) {
   Write-Host 'First run - creating omnivoice-env and installing deps...'
   if (Get-Command uv -ErrorAction SilentlyContinue) {
@@ -99,6 +108,27 @@ if (-not (Test-Path $Python)) {
     & $Python -m pip install -r requirements.txt
   }
 }
+
+# Windows Application Control / WDAC can block CUDA's caffe2_nvrtc.dll before
+# the API starts. Verify a working CUDA build before entering the restart loop.
+# Keep the GPU install intact and fail with actionable diagnostics; never
+# silently switch the requested GPU service to CPU or weaken application policy.
+$torchCheck = Test-TorchImports $Python
+if ($torchCheck.ExitCode -ne 0) {
+  if ($torchCheck.Output -match '(?i)(caffe2_nvrtc\.dll|application control policy|blocked this file|WDAC|AppLocker)') {
+    Write-Host 'Windows Application Control blocked a PyTorch CUDA DLL. GPU startup cannot continue until the official CUDA runtime is approved by the device policy.' -ForegroundColor Red
+    Write-Host 'Ask the device administrator to review CodeIntegrity > Operational event 3077 and its correlated 3089 signature event for caffe2_nvrtc.dll.' -ForegroundColor Yellow
+    Write-Host 'The launcher will not downgrade this service to CPU.' -ForegroundColor Yellow
+  } elseif ($torchCheck.Output -match '(?i)cuda\s+none|cuda_available\s+False') {
+    Write-Host 'A working NVIDIA CUDA PyTorch runtime was not detected. Install a matching official CUDA build and confirm the NVIDIA driver is available.' -ForegroundColor Red
+    Write-Host 'The launcher will not downgrade this GPU service to CPU.' -ForegroundColor Yellow
+  }
+  Write-Host 'PyTorch/Torchaudio GPU preflight failed; server startup was stopped to avoid endless unhealthy restarts:' -ForegroundColor Red
+  Write-Host $torchCheck.Output -ForegroundColor Red
+  exit 1
+}
+Write-Host "PyTorch/Torchaudio CUDA preflight passed: $($torchCheck.Output)" -ForegroundColor DarkGray
+$env:VOICE_API_DEVICE = 'cuda'
 
 # Start one server process; returns the Process object (PID).
 function Start-Server {
