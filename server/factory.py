@@ -163,7 +163,5 @@ def create_app(config=None) -> FastAPI:
         health=make_health(services),
         ready=make_ready(services),
         api_config=make_api_config(services),
-        web_dir=config.web_dir,
-        serve_ui=config.serve_ui,
     )
     return app

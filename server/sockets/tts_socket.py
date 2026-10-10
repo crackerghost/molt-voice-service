@@ -281,6 +281,28 @@ def make_ws_tts(services):
                                 )
                                 messages[0] = {"role": "system", "content": _screen_system_prompt(recent)}
 
+                    # Lesson text is sent as a bounded assistant-context message,
+                    # shared from the room's canonical script by each client.
+                    # It stays separate from ordinary chat history so older
+                    # lesson parts are not evicted by follow-up questions.
+                    if data.get("lesson_context") is True:
+                        lesson_context = "\n".join(
+                            str(m.get("content") or "")
+                            for m in history
+                            if isinstance(m, dict)
+                            and m.get("role") == "assistant"
+                            and str(m.get("content") or "").startswith("[LIVE LESSON CONTEXT]")
+                        )[:6200]
+                        if lesson_context:
+                            system_message = messages[0]
+                            messages[0] = {
+                                "role": "system",
+                                "content": str(system_message.get("content") or "")
+                                + "\n\nWhen the conversation includes a [LIVE LESSON CONTEXT] assistant message, use it to connect a related learner question to what the live lecture covered. Explain the connection simply. The current part may still be in progress; do not claim the learner heard all of it. If unrelated, answer normally.",
+                            }
+                            insertion = len(messages) - 1 if messages and messages[-1].get("role") == "user" else len(messages)
+                            messages.insert(insertion, {"role": "assistant", "content": lesson_context})
+
                     turn_started[0] = time.monotonic()
                     stop_evt.clear()
                     start = time.perf_counter()

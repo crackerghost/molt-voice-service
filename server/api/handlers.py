@@ -51,7 +51,7 @@ def make_api_config(services):
     cfg = services.config
 
     def api_config():
-        """Every env-tunable knob in one JSON blob (drives the web UI)."""
+        """Every env-tunable knob in one JSON blob for API consumers."""
         return {
             "model": cfg.model_name,
             "num_step": cfg.num_step,

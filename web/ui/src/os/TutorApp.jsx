@@ -188,7 +188,7 @@ export default function TutorApp({
           </div>
 
           {/* course cards */}
-          <div className="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+          <div className={`mt-3 grid grid-cols-1 gap-4 ${courses.length > 1 ? "sm:grid-cols-2 xl:grid-cols-3" : ""}`}>
             {(courses || []).map((c, ci) => {
               const list = flatLessons(c);
               const done = list.filter((l) => doneIds.has(l.id)).length;

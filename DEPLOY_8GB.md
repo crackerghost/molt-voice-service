@@ -13,8 +13,7 @@ notmybug/
     ├── server/          ← FastAPI app (TTS + chat + vision + WS)
     ├── requirements.txt / pyproject.toml
     ├── .env.example     ← copy to .env on the laptop, fill keys
-    ├── my_voice.wav     ← reference voice (git-ignored, copy manually!)
-    └── web/ui/          ← bundled tutor UI (optional, rebuild on laptop)
+    └── my_voice.wav     ← reference voice (git-ignored, copy manually!)
 ```
 
 ## 1. Upload to the GPU laptop
@@ -24,7 +23,7 @@ Copy **only** `voice-service/` (not the whole repo):
 ```bash
 # from this machine — excludes venv, caches, secrets
 rsync -av --exclude='omnivoice-env/' --exclude='__pycache__/' \
-  --exclude='node_modules/' --exclude='web/ui/dist/' \
+  --exclude='node_modules/' --exclude='web/ui/' \
   voice-service/ user@GPU_LAPTOP:~/voice-service/
 
 # my_voice.wav is git-ignored upstream — copy it explicitly:
@@ -54,10 +53,7 @@ cp .env.example .env
 #   VOICE_NUM_STEP=6            ← 8GB sweet spot (quality/speed dial)
 #   VOICE_FIRST_STEP=4
 
-# Optional: bundled tutor UI
-cd web/ui && npm install && npm run build && cd ../..
-
-# Run — this IS the one API endpoint
+# Run the API server
 ./start.sh
 # or: ./omnivoice-env/bin/python -m server
 ```

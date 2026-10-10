@@ -162,9 +162,6 @@ class VoiceConfig:
     vision_timeout: float = 90.0
     screen_recent_s: float = 25.0
     screen_routing_mode: str = "auto"
-    # web dir (built UI); empty path = skip static mount
-    web_dir: Path = field(default_factory=lambda: Path("web/ui/dist"))
-    serve_ui: bool = True
     # filler maskers (pre-generated cloned-voice wavs masking LLM+TTS latency)
     filler_dir: Path = field(default_factory=lambda: Path("assets/fillers"))
     filler_enabled: bool = True
@@ -244,7 +241,6 @@ class VoiceConfig:
             "!": round(_pause("EXCLAM", 0.16) * scale, 3),
             "।": round(_pause("DANDA", 0.16) * scale, 3),
         }
-        web_dir = root / "web" / "ui" / "dist"
         raw_origins = os.environ.get("VOICE_ALLOWED_ORIGINS", "*").strip() or "*"
         if raw_origins == "*":
             allowed_origins = ("*",)
@@ -330,8 +326,6 @@ class VoiceConfig:
             vision_timeout=float(os.environ.get("VOICE_VISION_TIMEOUT", "90.0")),
             screen_recent_s=float(os.environ.get("SCREEN_RECENT_S", "25")),
             screen_routing_mode=os.environ.get("VOICE_SCREEN_ROUTING", "auto").strip().lower(),
-            web_dir=web_dir,
-            serve_ui=os.environ.get("VOICE_SERVE_UI", "1") != "0",
             filler_dir=_resolve_path(
                 os.environ.get("VOICE_FILLER_DIR", "assets/fillers"), root
             ),

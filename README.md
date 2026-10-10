@@ -16,7 +16,9 @@ chat turns by speaking in that voice.
   speaker output *before* the audio is transcribed, so the assistant can never
   "hear" itself. *(No Web Speech API — its separate capture path has no echo
   reference, which caused self-conversation loops.)*
-- **Web UI:** React/Vite/Tailwind panel (mic, live captions, chat, barge-in).
+- **API only:** HTTP and WebSocket endpoints for voice, chat, ASR, and vision.
+  The product UI lives in the consuming application and connects through the
+  configured API base URL.
 
 ```
 Voice_Cloning/
@@ -39,7 +41,7 @@ Voice_Cloning/
 │   ├── routes/           # thin FastAPI registrars (no logic)
 │   └── protocol/         # realtime event builders
 ├── examples/embed.py     # reuse in another project (standalone / explicit / mount)
-├── web/ui/               # React frontend and Excalidraw whiteboard
+├── web/ui/               # legacy local development sandbox; not served/deployed
 ├── my_voice.wav          # local reference voice clip
 ├── start.sh              # create the environment, run the server, open UI
 ├── requirements.txt
@@ -98,10 +100,7 @@ cd Voice_Cloning
 uv venv --python 3.11 omnivoice-env
 uv pip install -r requirements.txt
 
-# 2) Optional: web UI needs node once (only if you want the chat panel)
-cd web/ui && npm install && npm run build && cd ../..
-
-# 3) Config — copy and edit (reference voice path/text, LLM key, tuning)
+# 2) Config — copy and edit (reference voice path/text, LLM key, tuning)
 cp .env.example .env
 #   - GROQ_API_KEY=...           (required for chat; or export the env var)
 #   - VOICE_REF_AUDIO=my_voice.wav
@@ -119,7 +118,7 @@ cp .env.example .env
 ### Run
 
 ```bash
-# Full server (UI at http://127.0.0.1:8000) — helper:
+# Start the API server:
 ./start.sh
 # …or manually:
 ./omnivoice-env/bin/python voice_api.py
@@ -131,6 +130,7 @@ curl http://127.0.0.1:8000/ready
 
 **First run downloads models:** OmniVoice weights and (on first mic use) the
 faster-whisper model (`ASR_MODEL`, default `small` ≈ 460 MB) from Hugging Face.
+The service does not host a browser UI; point the main application at this API.
 
 ## 3. Quality ↔ speed tuning
 
@@ -321,7 +321,7 @@ can ask "यह एरर क्यों आ रहा है?" or "इस क�
 | `torch.cuda.is_available()` is `False` on the GPU box | venv was copied from another machine; recreate it there (`uv pip install -r requirements.txt`) |
 | Voice input does nothing | Chrome/Edge only; check `/api/config` shows `"asr_model"`; watch the server log for the whisper load line; allow a minute on first use |
 | Assistant still hears itself | Use headphones / lower volume (AEC needs a clear echo reference); confirm the reply is playing through the same tab's speakers |
-| No web UI after `git clone` | `web/ui/dist` is git-ignored — run `cd web/ui && npm install && npm run build` |
+| Browser UI needed | Run the consuming frontend separately and set its voice API base URL |
 | Chat says "LLM API key not configured" | Add `GROQ_API_KEY` (consoles.groq.com) to `.env` and restart the server |
 | Assistant answers while you're still mid-sentence (server log shows many `Processing audio with duration 00:01…` lines) | End-of-speech tail is too short — raise `VOICE_AUTO_SEND_MS` to 700–900 (it cuts off speech in 1–2 s fragments, each firing a reply) |
 | Generated speech sounds flat/robotic | Raise `VOICE_NUM_STEP`, and/or re-record a cleaner `my_voice.wav` with clear pauses |
