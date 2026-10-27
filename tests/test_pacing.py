@@ -31,7 +31,7 @@ class TestNaturalStreaming(unittest.TestCase):
 
 
 class TestNaturalProfile(unittest.TestCase):
-    def test_old_gpu_env_is_clamped_after_restart(self):
+    def test_old_gpu_env_keeps_safe_pacing_without_reducing_quality(self):
         env = {
             "VOICE_API_DEVICE": "cpu",
             "VOICE_DELIVERY_PROFILE": "natural",
@@ -50,13 +50,13 @@ class TestNaturalProfile(unittest.TestCase):
         with patch.dict(os.environ, env, clear=True):
             cfg = VoiceConfig.from_env(Path("."))
         self.assertEqual(cfg.default_speed, 1.08)
-        self.assertEqual(cfg.num_step, 8)
+        self.assertEqual(cfg.num_step, 32)
         self.assertEqual(cfg.speed_excited, 1.03)
         self.assertEqual(cfg.speed_dramatic, 0.97)
         self.assertEqual(cfg.speed_long, 0.98)
-        self.assertEqual(cfg.first_window_chars, 64)
+        self.assertEqual(cfg.first_window_chars, 100)
         self.assertEqual(cfg.min_window_chars, 55)
-        self.assertEqual(cfg.first_window_step, 5)
+        self.assertEqual(cfg.first_window_step, 16)
         self.assertEqual(cfg.filler_threshold_ms, 900)
         self.assertFalse(cfg.filler_enabled)
         self.assertEqual(cfg.filler_mode, "off")
@@ -74,7 +74,7 @@ class TestNaturalProfile(unittest.TestCase):
         self.assertTrue(cfg.filler_enabled)
         self.assertEqual(cfg.filler_mode, "slow")
 
-    def test_natural_profile_caps_slow_first_window(self):
+    def test_low_step_first_window_keeps_quality_floor(self):
         env = {
             "VOICE_API_DEVICE": "cpu",
             "VOICE_DELIVERY_PROFILE": "natural",
@@ -82,7 +82,7 @@ class TestNaturalProfile(unittest.TestCase):
         }
         with patch.dict(os.environ, env, clear=True):
             cfg = VoiceConfig.from_env(Path("."))
-        self.assertEqual(cfg.first_window_step, 6)
+        self.assertEqual(cfg.first_window_step, 16)
 
     def test_excited_line_stays_within_natural_range(self):
         self.assertLessEqual(pick_speed("बहुत अच्छा!", 1.08, excited_mult=1.03), 1.12)

@@ -118,7 +118,10 @@ def make_api_config(services):
             "diagram_pace_gap_s": _os.environ.get("DIAGRAM_PACE_GAP_S", "3.5"),
             "os_director_enabled": cfg.os_director_enabled,
             "os_director_block_s": cfg.os_director_block_s,
-            "chat_step": int(_os.environ.get("VOICE_CHAT_STEP", "8")),
+            "chat_step": max(
+                cfg.step_min,
+                min(cfg.step_max, int(_os.environ.get("VOICE_CHAT_STEP", str(cfg.num_step)))),
+            ),
             "jitter_frames": cfg.jitter_frames,
             "max_history": int(_os.environ.get("VOICE_MAX_HISTORY", "8")),
             "ws_reconnect_ms": int(_os.environ.get("VOICE_WS_RECONNECT_MS", "1500")),

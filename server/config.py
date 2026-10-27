@@ -105,9 +105,9 @@ class VoiceConfig:
     # TTS model
     model_name: str = "k2-fsa/OmniVoice"
     sample_rate: int = 24000
-    num_step: int = 6
-    tts_temperature: float = 0.3
-    default_speed: float = 1.06
+    num_step: int = 16
+    tts_temperature: float = 0.0
+    default_speed: float = 1.0
     step_min: int = 4
     step_max: int = 64
     greeting_max: int = 2
@@ -155,7 +155,7 @@ class VoiceConfig:
     window_char_cap: int = 150
     min_window_chars: int = 55
     max_chat_sentences: int = 6
-    first_window_step: int = 5
+    first_window_step: int = 16
     max_history: int = 8
     pause_seconds: dict = field(default_factory=dict)
     # vision / screen
@@ -189,34 +189,42 @@ class VoiceConfig:
         effort_raw = os.environ.get("DEEPSEEK_REASONING_EFFORT", "").strip().lower()
         effort = effort_raw if effort_raw in ("low", "medium", "high", "xhigh", "max") else ""
 
-        # Existing GPU deployments may still carry the original fast/excited
-        # values in their private .env.  The natural profile intentionally
-        # clamps those legacy values so a pull + restart is enough to receive
-        # the production delivery fix.  Set the profile to ``legacy`` to opt
-        # back into unrestricted per-variable tuning.
+        # Natural delivery retains enough decoding steps for intelligible
+        # speech, including the first clip. The legacy profile explicitly
+        # opts back into the old low-step / stochastic tuning.
         delivery_profile = os.environ.get("VOICE_DELIVERY_PROFILE", "natural").strip().lower()
         if delivery_profile not in ("natural", "legacy"):
             delivery_profile = "natural"
-        default_speed = float(os.environ.get("VOICE_SPEED", "1.06"))
+        default_speed = float(os.environ.get("VOICE_SPEED", "1.0"))
         speed_excited = float(os.environ.get("VOICE_EXCITED_SPEED", "1.02"))
         speed_dramatic = float(os.environ.get("VOICE_DRAMATIC_SPEED", "0.98"))
         speed_long = float(os.environ.get("VOICE_LONG_SPEED", "0.99"))
-        num_step = int(os.environ.get("VOICE_NUM_STEP", "6"))
+        num_step = int(os.environ.get("VOICE_NUM_STEP", "16"))
+        tts_temperature = float(os.environ.get("VOICE_TEMPERATURE", "0.0"))
+        step_min = int(os.environ.get("VOICE_STEP_MIN", "4"))
+        step_max = int(os.environ.get("VOICE_STEP_MAX", "64"))
+        window_char_cap = int(os.environ.get("VOICE_WINDOW_CHARS", "150"))
         first_window_chars = int(os.environ.get("VOICE_FIRST_WINDOW_CHARS", "100"))
         min_window_chars = int(os.environ.get("VOICE_MIN_WINDOW_CHARS", "55"))
-        first_window_step = int(os.environ.get("VOICE_FIRST_STEP", "5"))
+        first_window_step = int(os.environ.get("VOICE_FIRST_STEP", "16"))
         filler_threshold_ms = int(os.environ.get("VOICE_FILLER_THRESHOLD_MS", "900"))
         filler_enabled = os.environ.get("VOICE_FILLER_ENABLED", "0") != "0"
         filler_mode = os.environ.get("VOICE_FILLER_MODE", "off").strip().lower() or "off"
         if delivery_profile == "natural":
-            num_step = max(5, min(num_step, 8))
+            # OmniVoice recommends 16 steps for fast inference (32 by default).
+            # Five-step classroom clips reproduced repeated/mangled words on
+            # the T4; 16 steps stayed faster than playback in the same check.
+            step_min = max(16, step_min)
+            step_max = max(step_min, step_max)
+            num_step = max(step_min, min(num_step, step_max))
+            first_window_step = max(step_min, min(first_window_step, num_step))
+            tts_temperature = 0.0  # greedy audio tokens, matching upstream
             default_speed = min(default_speed, 1.08)
             speed_excited = min(speed_excited, 1.03)
             speed_dramatic = max(speed_dramatic, 0.97)
             speed_long = max(speed_long, 0.98)
             first_window_chars = max(first_window_chars, 100)
             min_window_chars = max(min_window_chars, 55)
-            first_window_step = max(5, min(first_window_step, 6))
             filler_threshold_ms = max(filler_threshold_ms, 900)
             # A filler WAV occupies the same client playback queue as the real
             # answer. On a realtime GPU it therefore adds latency instead of
@@ -270,10 +278,10 @@ class VoiceConfig:
             model_name=os.environ.get("OMNIVOICE_MODEL", "k2-fsa/OmniVoice"),
             sample_rate=int(os.environ.get("VOICE_SAMPLE_RATE", "24000")),
             num_step=num_step,
-            tts_temperature=float(os.environ.get("VOICE_TEMPERATURE", "0.3")),
+            tts_temperature=tts_temperature,
             default_speed=default_speed,
-            step_min=int(os.environ.get("VOICE_STEP_MIN", "4")),
-            step_max=int(os.environ.get("VOICE_STEP_MAX", "64")),
+            step_min=step_min,
+            step_max=step_max,
             greeting_max=int(os.environ.get("VOICE_GREETING_MAX", "2")),
             first_window_chars=first_window_chars,
             jitter_frames=max(0, int(os.environ.get("VOICE_JITTER_FRAMES", "1"))),
@@ -317,10 +325,10 @@ class VoiceConfig:
             os_director_block_s=float(os.environ.get("OS_DIRECTOR_BLOCK_S", "5") or 5),
             stream_max_chars=int(os.environ.get("VOICE_STREAM_MAX_CHARS", "150")),
             stream_window=max(1, int(os.environ.get("VOICE_STREAM_WINDOW", "3"))),
-            window_char_cap=int(os.environ.get("VOICE_WINDOW_CHARS", "150")),
+            window_char_cap=window_char_cap,
             min_window_chars=min_window_chars,
             max_chat_sentences=int(os.environ.get("VOICE_MAX_SENTENCES", "6")),
-            first_window_step=max(2, min(32, first_window_step)),
+            first_window_step=max(2, min(step_max, first_window_step)),
             max_history=int(os.environ.get("VOICE_MAX_HISTORY", "8")),
             pause_seconds=pauses,
             vision_timeout=float(os.environ.get("VOICE_VISION_TIMEOUT", "90.0")),

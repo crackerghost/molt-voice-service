@@ -150,14 +150,21 @@ The service does not host a browser UI; point the main application at this API.
 
 The main dial is diffusion `num_step` (`VOICE_NUM_STEP`):
 
-- **32** — highest quality (official default) — roughly real-time on a
-  4060/3060-class card at fp16
-- **16** — default here; ~2–4× real-time on an 8 GB NVIDIA card
-- **8–12** — fastest, used for the *first* audio window (`VOICE_FIRST_STEP=6`)
-  so a reply starts almost instantly
+- **32** — upstream default; more decoding work for better quality.
+- **16** — the default here and upstream's faster inference recommendation.
+- **4–8** — experimental low budgets; can repeat, omit or mangle words.
 
-Run `main.py` at a few values on your GPU and pick the highest `num_step`
-whose RTF feels comfortable — that is your real quality/speed sweet spot.
+The `natural` delivery profile enforces a minimum of **16 steps for every
+clip, including the opening window**, and uses greedy audio-token sampling
+(`VOICE_TEMPERATURE=0`). Higher quality settings such as 32 are preserved.
+Use `VOICE_DELIVERY_PROFILE=legacy` only to opt back into lower steps or
+nonzero token temperature. Speed and window-size tuning remain available.
+
+In a controlled T4 fp16 check, 16-step generation took 1.6–1.8 seconds for
+7–9 seconds of classroom speech. The 5-step version repeated a phrase and
+mangled words in the same text. These samples establish a safer default;
+measure your own workload's real-time factor (generation seconds / audio
+seconds) before sacrificing quality for startup latency.
 Every knob is documented in `.env.example` (chat windows, VAD, pauses, pacing,
 ASR cadence, …) and is served to the UI by `/api/config`.
 

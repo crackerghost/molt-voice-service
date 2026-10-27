@@ -32,6 +32,22 @@ class TestStreamChunks(unittest.TestCase):
         self.assertEqual(self.engine.config.pad_duration, 0.02)
         self.assertEqual(self.engine.config.fade_duration, 0.02)
 
+    def test_greedy_temperature_reaches_model(self):
+        import numpy as np
+
+        received = {}
+
+        class FakeModel:
+            def generate(self, **kwargs):
+                received.update(kwargs)
+                return [np.zeros(8, dtype=np.float32)]
+
+        self.engine.model = FakeModel()
+        self.engine.voice_prompt = object()
+        self.engine.generate("नमस्ते", 16, 1.0, temperature=0.0)
+        self.assertEqual(received["class_temperature"], 0.0)
+        self.assertEqual(received["num_step"], 16)
+
     def test_wav_bytes_are_pcm16(self):
         import io
         import numpy as np

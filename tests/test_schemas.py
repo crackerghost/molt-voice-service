@@ -1,10 +1,13 @@
 """Tests for input validation schemas."""
 
+import os
 import unittest
+from unittest.mock import patch
 
 from pydantic import ValidationError
 
 from server.schemas import make_schemas
+from server.config import VoiceConfig
 
 
 TTSRequest, ChatMsg, ChatRequest, VisionRequest = make_schemas(
@@ -43,6 +46,17 @@ class TestTTSRequestValidation(unittest.TestCase):
     def test_nstep_alias_works(self):
         req = TTSRequest(text="नमस्ते", nstep=16)
         self.assertEqual(req.nfe_step, 16)
+
+    def test_natural_profile_rejects_legacy_low_step_http_requests(self):
+        with patch.dict(os.environ, {"VOICE_API_DEVICE": "cpu", "VOICE_NUM_STEP": "8"}, clear=True):
+            cfg = VoiceConfig.from_env("/tmp")
+        QualityTTS, *_ = make_schemas(
+            default_speed=cfg.default_speed, step_min=cfg.step_min,
+            step_max=cfg.step_max, default_step=cfg.num_step,
+        )
+        self.assertEqual(QualityTTS(text="नमस्ते").nfe_step, 16)
+        with self.assertRaises(ValidationError):
+            QualityTTS(text="नमस्ते", nfe_step=8)
 
 
 class TestChatRequestValidation(unittest.TestCase):
