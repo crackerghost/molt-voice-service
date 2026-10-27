@@ -6,7 +6,7 @@ Protocol:
   client -> {"type": "mode", "vad": "server"}  (opt into server Silero VAD)
   client -> {"type": "assistant", "active": bool}  (our TTS playing gate)
   client -> <binary>  float32 mono PCM @ 16 kHz
-  server -> {"type": "partial"|"speculative"|"final"|"vad_start"|"vad_end"|...}
+  server -> {"type": "partial"|"speculative"|"final"|"vad_start"|"vad_end"|"end"|...}
 
 Built by :func:`make_ws_asr` — the blocking Whisper work stays in a worker
 thread; only thin config flows through the container.
@@ -326,6 +326,10 @@ def make_ws_asr(services):
                             # Empty push-to-talk releases are intentionally
                             # silent; they are not rejected user utterances.
                             out_q.put(("final", ""))
+                        # Tell the client all results caused by this release
+                        # have been queued, so it can close without guessing
+                        # how long the final decode will take.
+                        out_q.put(("end", ""))
                         continue
                     if (ctl == "__noop__" or ctl is None) and open_utt and total >= int(0.5 * A.ASR_SR) \
                             and new_since >= A.ASR_PARTIAL_MIN_NEW \
@@ -347,7 +351,7 @@ def make_ws_asr(services):
                     except queue.Empty:
                         await asyncio.sleep(0.05)
                         continue
-                    if kind in ("partial", "speculative", "final", "rejected", "error"):
+                    if kind in ("partial", "speculative", "final", "rejected", "error", "end"):
                         log.info("ASR output: type=%s text=%r", kind, str(text or "")[:240])
                     try:
                         frame = (

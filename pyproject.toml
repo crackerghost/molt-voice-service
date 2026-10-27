@@ -27,7 +27,12 @@ dependencies = [
 
 [project.optional-dependencies]
 mac = ["mlx-whisper>=0.4,<1; sys_platform == 'darwin' and platform_machine == 'arm64'"]
-linux-gpu = ["onnxruntime-gpu==1.22.0; sys_platform == 'linux'", "bitsandbytes>=0.43; sys_platform == 'linux'"]
+linux-gpu = [
+  "onnxruntime-gpu==1.22.0; sys_platform == 'linux'",
+  "bitsandbytes>=0.43; sys_platform == 'linux'",
+  "nvidia-cublas-cu12; sys_platform == 'linux'",
+  "nvidia-cudnn-cu12>=9,<10; sys_platform == 'linux'",
+]
 cpu = ["onnxruntime; sys_platform != 'linux'"]
 speaker-gate = ["resemblyzer>=0.1.4"]
 

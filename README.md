@@ -43,10 +43,24 @@ Voice_Cloning/
 ├── examples/embed.py     # reuse in another project (standalone / explicit / mount)
 ├── web/ui/               # legacy local development sandbox; not served/deployed
 ├── my_voice.wav          # local reference voice clip
-├── start.sh              # create the environment, run the server, open UI
+├── start.sh              # create the local environment and start the API
 ├── requirements.txt
 └── .env.example          # documented runtime configuration
 ```
+
+### Run on Kaggle
+
+For a one-click GPU notebook that installs this API, loads its voice reference
+from a Kaggle Dataset, and prints a temporary public URL, use
+[`kaggle/molt_voice_service.ipynb`](kaggle/molt_voice_service.ipynb). Setup,
+secret, and URL lifetime notes are in [`kaggle/README.md`](kaggle/README.md).
+
+### Run on Modal
+
+For a persistent HTTPS + WebSocket API on a serverless GPU, follow
+[`DEPLOY_MODAL.md`](DEPLOY_MODAL.md). It deploys the existing FastAPI routes
+from `server/` and keeps the model cache and private voice reference in Modal
+Volumes.
 
 ### Reuse in another project
 
