@@ -58,9 +58,9 @@ class _StubClient:
         }}]})
 
 
-def _plan(text, stub, **kw):
+def _plan(text, stub, *, practice_allowed=True, **kw):
     return plan_os_actions(
-        "key", text, {"open": ["code"], "code": {"file": "js/app.js"}},
+        "key", text, {"open": ["code"], "code": {"file": "js/app.js", "practice_allowed": practice_allowed}},
         stop_evt=threading.Event(), client=stub,
         url="http://x", model="m", **kw,
     )
@@ -78,7 +78,8 @@ class TurnWiringTests(unittest.TestCase):
         actions = _plan(text, stub, max_tokens=CODE_DIRECTOR_TOKENS)
         self.assertEqual(
             actions,
-            [{"op": "code_create", "path": "js/counter.js", "content": "let n = 0;"}],
+            [{"op": "code_set_module", "module": "html_css_js"},
+             {"op": "code_create", "path": "js/counter.js", "content": "let n = 0;"}],
         )
         self.assertEqual(stub.calls[0]["max_tokens"], CODE_DIRECTOR_TOKENS)
 
@@ -108,13 +109,15 @@ class TurnWiringTests(unittest.TestCase):
             "lesson": {"id": "js-4", "title": "X" * 500},
             "evil": "drop me",
         })
-        self.assertEqual(snap["code"], {"file": "js/app.js", "lang": "javascript"})
+        self.assertEqual(snap["code"], {"file": "js/app.js", "lang": "javascript", "practice_allowed": False, "practice_pending": False})
         self.assertEqual(snap["lesson"], {"id": "js-4"})
         self.assertNotIn("evil", snap)
         # traversal in the open-file slot is dropped, never trusted
-        self.assertNotIn(
-            "code", sanitize_os_snapshot({"code": {"file": "../x.js"}}),
-        )
+        self.assertNotIn('file', sanitize_os_snapshot({'code': {'file': '../x.js'}})['code'])
+
+    def test_code_turn_without_practice_permission_cannot_write_or_open_editor(self):
+        stub = _StubClient([{'op': 'code_write', 'path': 'js/app.js', 'content': 'changed'}, {'op': 'open_app', 'app': 'code'}])
+        self.assertEqual(_plan('code me counter bana do', stub, practice_allowed=False), [])
 
     def test_client_queue_contract(self):
         """Every code action the server can emit is exactly what App.jsx's

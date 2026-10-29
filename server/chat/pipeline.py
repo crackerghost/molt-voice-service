@@ -136,6 +136,7 @@ def chat_worker(
     os_ctx: dict | None = None,
     provider_clients=None,
     inline_board: bool = False,
+    response_language: str = "hi",
 ):
     """Full chat-turn pipeline (see module docstring)."""
     from server.speech.pacing import GREETING_RE
@@ -192,7 +193,11 @@ def chat_worker(
                     return
                 if producer_stop.is_set():
                     return
-                sent = deps.speech_sentence(raw, complete)
+                if response_language == "en":
+                    from server.chat.phrases import speech_sentence
+                    sent = speech_sentence(raw, complete, language="en")
+                else:
+                    sent = deps.speech_sentence(raw, complete)
                 if not sent or len(sent) <= 2:
                     continue
                 sent_q.put((raw.strip(), sent, complete))
@@ -327,7 +332,7 @@ def chat_worker(
                         {"role": "system", "content": (
                             "तुम साथी ट्यूटर हो। बोर्ड पर ये आकृतियाँ अभी बनी हैं: "
                             f"{labels}। इनके बारे में सिर्फ २ छोटे बोले-जाने वाले वाक्य लिखो "
-                            "(पूरी देवनागरी, रोज़मर्रा हिंग्लिश), बोर्ड की तरफ इशारा करते हुए। "
+                            + ("In English. " if response_language == "en" else "पूरी देवनागरी, रोज़मर्रा हिंग्लिश। ") + "बोर्ड की तरफ इशारा करते हुए। "
                             "सिर्फ वाक्य लिखो, कोई टूल मत चलाओ।"
                         )},
                         {"role": "user", "content": f"टॉपिक: {topic}. बोर्ड पर क्या बना है, ये २ वाक्यों में बोलकर समझाओ।"},
@@ -506,7 +511,7 @@ def chat_worker(
                 and not llm_error and not (stop_evt is not None and stop_evt.is_set())):
             narration = _narrate_board()
             if not narration:
-                narration = "बोर्ड पर विज़ुअल रेडी है। अब इसे स्टेप बाय स्टेप समझते हैं।"
+                narration = "The diagram is ready. Let us work through it step by step." if response_language == "en" else "बोर्ड पर विज़ुअल रेडी है। अब इसे स्टेप बाय स्टेप समझते हैं।"
             if narration:
                 out_q.put(("text", narration))
                 _ship_window(narration, num_step, watch=False)
@@ -516,7 +521,7 @@ def chat_worker(
         # tools first: a tool-only answer is a valid board turn, not mishearing.
         if (not turn_texts and inline_count[0] == 0
                 and not (stop_evt is not None and stop_evt.is_set())):
-            fallback = "अरे, आवाज़ साफ़ नहीं आ पाई। एक बार फिर से बोल दो।"
+            fallback = "I could not hear that clearly. Please say it once more." if response_language == "en" else "आवाज़ साफ़ नहीं आ पाई। प्लीज़ एक बार फिर से बताइए।"
             out_q.put(("text", fallback))
             _ship_window(fallback, min(num_step, cfg.first_window_step), watch=False)
             emitted_audio = True

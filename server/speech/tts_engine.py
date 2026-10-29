@@ -60,6 +60,7 @@ except OSError as exc:
 from omnivoice import OmniVoice
 
 from server.gpu import gpu_generate_lock
+from server.llm.language import spoken_language
 
 log = logging.getLogger("voice_api")
 
@@ -130,10 +131,11 @@ class TTSEngine:
     def generate(self, text, num_step, speed, temperature=None):
         if self.model is None or self.voice_prompt is None:
             raise RuntimeError("TTS engine is not loaded")
+        language = spoken_language(text)
         kwargs = {
-            "text": self.pronunciation_fix(text),
+            "text": str(text) if language == "en" else self.pronunciation_fix(text),
             "voice_clone_prompt": self.voice_prompt,
-            "language": self.config.language,
+            "language": "en" if language == "en" else self.config.language,
             "num_step": num_step,
             "pad_duration": self.config.pad_duration,
             "fade_duration": self.config.fade_duration,

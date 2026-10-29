@@ -48,6 +48,20 @@ class TestStreamChunks(unittest.TestCase):
         self.assertEqual(received["class_temperature"], 0.0)
         self.assertEqual(received["num_step"], 16)
 
+    def test_english_generation_uses_english_language_and_preserves_hindi_name(self):
+        import numpy as np
+        received = {}
+        class FakeModel:
+            def generate(self, **kwargs):
+                received.update(kwargs)
+                return [np.zeros(8, dtype=np.float32)]
+        self.engine.model = FakeModel()
+        self.engine.voice_prompt = object()
+        self.engine.pronunciation_fix = lambda text: "must not normalize English into Hindi"
+        self.engine.generate("राज, DNS resolves a name in 2 steps.", 16, 1.0)
+        self.assertEqual(received["language"], "en")
+        self.assertEqual(received["text"], "राज, DNS resolves a name in 2 steps.")
+
     def test_wav_bytes_are_pcm16(self):
         import io
         import numpy as np

@@ -1,9 +1,13 @@
 """Intent-based diagram generation for the visual tutor surface."""
 
 import json
+import hashlib
+import math
 import re
 import threading
 import time
+from urllib.parse import urlsplit
+from server.llm.board_visuals import VISUAL_FIELDS, normalize_scene, normalize_regions, resolve_images, safe_url
 
 DIAGRAM_MAX_ELEMENTS = 40
 DIAGRAM_MAX_TEXT = 180
@@ -55,7 +59,17 @@ DIAGRAM_TOOL = {
     "type": "function",
     "function": {
         "name": "draw_flowchart_or_diagram",
-            "description": "Render concise concept nodes (rectangles, ellipses, diamonds, triangles for peaks/roofs), comparison tables, quiz checks, notes, code snippets, and connecting arrows on the whiteboard.",
+            "description": (
+                "Teach on a classroom greenboard using concise English writing. Choose the visual that fits: "
+                "circle/ellipse for entities or start/end, square/rectangle for steps, diamond for decisions, "
+                "triangle for a roof/peak, text for headings, labeled arrows for flow, table for comparisons, "
+                "note for a takeaway, scene for animated arrays, box models or node diagrams, image for a lesson illustration, or html for a simple original visual. "
+                "Actual source code MUST use type=code with code and language fields, never source inside a shape or note. "
+                "Use 3-6 nodes per idea, short labels, and at most 4 table columns with 6 rows. "
+                "Order elements with the spoken explanation; do not duplicate earlier nodes or invent image URLs. "
+                "Images use an exact known src, or query to search for a real image. Never invent URLs. "
+                "Use sceneKey and complete snapshots to update the same visual smoothly; image regions must refer to an inspected known src."
+            ),
         "parameters": {
             "type": "object",
             "properties": {
@@ -66,11 +80,12 @@ DIAGRAM_TOOL = {
                         "type": "object",
                         "properties": {
                             "id": {"type": "string"},
-                            "type": {"type": "string", "enum": ["rectangle", "ellipse", "diamond", "triangle", "text", "arrow", "code", "note", "table", "quiz", "html"]},
+                            **VISUAL_FIELDS,
+                            "type": {"type": "string", "enum": ["rectangle", "square", "ellipse", "circle", "diamond", "triangle", "text", "arrow", "code", "note", "table", "quiz", "html", "image", "scene"]},
                             "x": {"type": "number"},
                             "y": {"type": "number"},
                             "width": {"type": "number"},
-                            "height": {"type": "number"},
+                            "height": {"type": "number", "description": "Shape height, or HTML iframe height (120-420)."},
                             "text": {"type": "string"},
                             "code": {"type": "string", "description": "Short exact code snippet (max ~10 lines) for type=code."},
                             "language": {"type": "string", "description": "Code label, e.g. HTML, JS, python."},
@@ -79,7 +94,10 @@ DIAGRAM_TOOL = {
                             "backgroundColor": {"type": "string"},
                             "startNodeId": {"type": "string"},
                             "endNodeId": {"type": "string"},
-                            "arrowLabel": {"type": "string"},
+                            "arrowLabel": {"type": "string", "description": "Short relationship or decision branch label, e.g. yes, no, request, response."},
+                            "src": {"type": "string", "description": "Image only: exact existing HTTPS or site-relative image URL supplied in user/lesson context. Never invent a URL."},
+                            "alt": {"type": "string", "description": "Image only: concise accessible description."},
+                            "credit": {"type": "string", "description": "Image only: attribution supplied with the source, when available."},
                             "trigger": {
                                 "type": "string",
                                 "description": "1-3 exact English words from the STEP that name this element (e.g. 'computer', 'query selector'). The board draws it the moment the tutor speaks them.",
@@ -88,7 +106,6 @@ DIAGRAM_TOOL = {
                             "rows": {"type": "array", "items": {"type": "array", "items": {"type": "string"}}, "description": "Table only: up to 6 rows matching the headers, cells 1-4 words."},
                             "options": {"type": "array", "items": {"type": "string"}, "description": "Quiz only: 2-4 short answer options."},
                             "html": {"type": "string", "description": "Rich-visual only: self-contained HTML + inline <style> (max ~40 lines, light card). No scripts, no external files."},
-                            "height": {"type": "integer", "description": "Rich-visual only: iframe height in px (120-420, default 220)."},
                             "answer": {"type": "integer", "description": "Quiz only: 0-based index of the correct option. Omit for a reflection question (no scoring)."},
                             "explanation": {"type": "string", "description": "Quiz only: one-line why, shown after the learner answers."},
                         },
@@ -181,7 +198,8 @@ def _step_prompt(step_text: str, topic: str, tag: str = "w", whole: bool = False
                 "tool call for THIS step only, mixing whatever explains best: "
                 "3-6 compact nodes with arrows, PLUS at most ONE short code "
                 "snippet (type=code, exact code/tags as-is, max ~10 lines, with "
-                "a language label) when the step shows code, and at most ONE "
+                "a language label) when the step shows code. CODE PLACEMENT: source belongs ONLY in "
+                "type=code blocks; shapes contain short concept labels, never code or fenced markdown. At most ONE "
                 "takeaway note (type=note): one line for the key insight — or, "
                 "when the step WRAPS UP or summarizes, 'Takeaways: • a • b • c' "
                 "(max 3 short bullets) with a trigger from the spoken summary "
@@ -190,12 +208,10 @@ def _step_prompt(step_text: str, topic: str, tag: str = "w", whole: bool = False
                 "parent or overview nodes from earlier steps; repeats are "
                 "dropped and leave the board emptier. ORDER elements in the "
                 "exact order the step speaks them, so each shape appears the "
-                "moment its words are spoken. SHAPE VARIETY — an all-rectangle "
-                "board is banned: mix shapes by MEANING in every step. Ellipse "
-                "for start points, key entities, and end outcomes. Diamond for "
-                "EVERY decision, branch, or either/or comparison "
-                "(visible-vs-hidden like head-vs-body IS a diamond). Rectangle "
-                "for parts and steps. DRAW THE THING, not just a chain: when "
+                "moment its words are spoken. Choose SHAPES BY MEANING, not decoration. Ellipse "
+                "for start points, key entities, and end outcomes. Use a diamond only for a real decision "
+                "or branch with labeled outcomes. Comparisons belong in a table. Rectangle "
+                "for parts and steps; a rectangle-only process is valid. DRAW THE THING, not just a chain: when "
                 "the topic is a concrete object (a page, browser, phone, map, "
                 "house), compose the object itself from labeled parts arranged "
                 "as the object looks (a browser = url-bar box above a viewport "
@@ -216,7 +232,7 @@ def _step_prompt(step_text: str, topic: str, tag: str = "w", whole: bool = False
                 "line why, trigger=the spoken question words). Max one quiz "
                 "per step. TONE every node: core = the key concept, "
                 "example = an illustration, warn = a common mistake — the board "
-                "colors them coral / teal / amber so importance reads instantly."
+                "uses white / yellow / soft red chalk so importance reads instantly. "
                 "RICH VISUALS (type=html): when the step uses a real-life "
                 "analogy or numbers worth charting, draw it as ONE "
                 "self-contained HTML snippet with inline <style> (max ~40 "
@@ -250,8 +266,8 @@ def _step_prompt(step_text: str, topic: str, tag: str = "w", whole: bool = False
                 "rectangle = component/step/part, ellipse = start/end/entity/outcome, "
                 "diamond = decision/branch/comparison, triangle = peak/apex/roof/top-of-hierarchy "
                 "(pyramid top, warning apex, house roof), text = free annotation, arrow = flow. "
-                "SHAPE RECIPES (compose, never single-box a concrete thing): CIRCLE = ellipse "
-                "with a 1-2 word label (sizing makes short labels round). HOUSE = one triangle "
+                "SHAPE RECIPES (compose, never single-box a concrete thing): use type=circle for a true circle "
+                "and type=square for a square, with short labels. Use ellipse/rectangle for longer labels. HOUSE = one triangle "
                 "(roof, label the house name) stacked directly above one rectangle (body, label "
                 "its rooms/features) — emit roof FIRST so it draws top-down. BROWSER = rectangle "
                 "url-bar above a viewport rectangle. PAGE = stacked section rectangles. PYRAMID / "
@@ -265,11 +281,20 @@ def _step_prompt(step_text: str, topic: str, tag: str = "w", whole: bool = False
                 "divider, never loop back except true cycles, max one arrow between the same pair. "
                 "ARROWS explain cause ('leads to'), sequence ('then'), or part-whole ('has-a'); "
                 "every arrow gets an arrowLabel of 1-2 spoken words when the step says a linking "
-                "word ('makes', 'gives', 'needs'). EXAMPLES-FIRST: every definition or concept "
-                "node earns ONE sibling example node (tone=example, label like 'e.g. h1 = big title') "
-                "drawn right after it — a board that only names things without showing one teaches "
-                "nothing. A step teaching 2+ facts ends with ONE takeaway note ('Takeaways: a/b/c'). "
-                "Mistakes the step warns about become warn-tone diamonds, never buried in labels."
+                "word ('makes', 'gives', 'needs'). Include a short example node (tone=example) "
+                "when the spoken explanation gives an example; never invent extra content just "
+                "to fill the board. End a substantial step with at most ONE takeaway note. "
+                "Mistakes the step warns about become warn-tone diamonds, never buried in labels. "
+                "VISUAL SCENES: prefer ONE type=scene to explain arrays (kind=array, stable items with id/value, "
+                "active and visited zero-based indices, labeled pointers and variables), CSS (kind=box-model, "
+                "focus=content/padding/border/margin, padding=24), or relationships (kind=nodes, nodes with id/label "
+                "and fractional x/y, edges with from/to). Keep one concept per scene. Reuse sceneKey across windows "
+                "and send complete state, retaining item ids when values change. Move only what the narration explains. "
+                "IMAGES: type=image uses an exact src URL supplied in context, or query for a real reference image search. "
+                "Never guess image links or claim an image search happened before a result. Use original scenes for exact "
+                "algorithm states. Only annotate an inspected known image: regions have id/label and fractional "
+                "x/y/width/height; activeRegion names the currently explained region. Never invent region coordinates "
+                "for query-only images. Keep notes concise and tables to one comparison at a time."
     )
     if whole:
         system = system.replace(
@@ -550,7 +575,7 @@ def assemble_board(arguments: object, *, id_prefix: str, turn_id: str) -> dict |
     Accepts a raw JSON string (sidecar planner) or a parsed dict (inline).
     """
     data = json.loads(arguments) if isinstance(arguments, (str, bytes, bytearray)) else arguments
-    diagram = normalize(data)
+    diagram = normalize(resolve_images(data))
     if not diagram:
         return None
     # Namespace ids per window so deltas merge without collisions.
@@ -560,6 +585,8 @@ def assemble_board(arguments: object, *, id_prefix: str, turn_id: str) -> dict |
     for item in diagram["elements"]:
         old_id = item["id"]
         new_id = old_id if old_id.startswith(f"{id_prefix}-") else f"{id_prefix}-{old_id}"
+        if item.get('sceneKey') and turn_id and item['type'] in ('scene', 'image'):
+            new_id = f"visual-{hashlib.sha256(turn_id.encode()).hexdigest()[:12]}-{item['sceneKey']}"
         new_id = new_id[:80]
         nodes[old_id] = new_id
         item["id"] = new_id
@@ -580,7 +607,11 @@ def assemble_board(arguments: object, *, id_prefix: str, turn_id: str) -> dict |
     out = [it for it in out
            if it["type"] == "arrow"
            or str(it.get("text", "")).strip()
-           or (it["type"] == "code" and str(it.get("code", "")).strip())]
+           or (it["type"] == "code" and str(it.get("code", "")).strip())
+           or it["type"] == "scene"
+           or (it["type"] == "image" and it.get("src"))
+           or (it["type"] == "table" and (it.get("headers") or it.get("rows")))
+           or (it["type"] == "html" and it.get("html"))]
     keep = {it["id"] for it in out if it["type"] in {"rectangle", "ellipse", "diamond", "triangle", "text"}}
     out = [it for it in out
            if it["type"] != "arrow"
@@ -592,7 +623,7 @@ def assemble_board(arguments: object, *, id_prefix: str, turn_id: str) -> dict |
         out = [it for it in out
                if it["type"] != "arrow"
                or side_of.get(it.get("startNodeId")) == side_of.get(it.get("endNodeId"))]
-    if not any(it["type"] in {"rectangle", "ellipse", "diamond", "triangle", "text", "code", "note", "table", "quiz", "html"} for it in out):
+    if not any(it["type"] in {"rectangle", "ellipse", "diamond", "triangle", "text", "code", "note", "table", "quiz", "html", "image", "scene"} for it in out):
         return None
     # Deterministic binary-tree layout (model coordinates are NOT trusted —
     # prod boards showed boxes piled on top of each other, then one
@@ -685,14 +716,21 @@ def _arrow_geometry(item: dict, boxes: dict[str, tuple]) -> None:
 # of one cramped horizontal strip. Compare steps (side=left/right) keep two
 # columns with a VS divider; tiny steps (<=2 shapes) stay a compact row.
 _TREE_X0, _TREE_W = 40.0, 1040.0
-_TREE_GAP_X, _TREE_GAP_Y = 48.0, 76.0
+_TREE_GAP_X, _TREE_GAP_Y = 100.0, 88.0
 
 
 def _node_size(item):
     label = str(item.get("text", ""))
     if item["type"] == "text":
-        return max(200, min(560, 90 + 7.5 * len(label))), 32
-    return max(220, min(460, 140 + 7 * len(label))), (72 if item["type"] in ("diamond", "triangle") else 64)
+        width = max(280, min(760, 90 + 16 * len(label)))
+        lines = sum(max(1, math.ceil(len(line) / max(1, width / 18))) for line in label.split("\n"))
+        return width, max(56, lines * 42)
+    if item.get("aspectRatio") == 1:
+        side = max(176, min(260, 120 + 7 * len(label)))
+        return side, side
+    width = max(280, min(460, 160 + 9 * len(label)))
+    height = {"diamond": 168, "triangle": 190, "ellipse": 128}.get(item["type"], 108)
+    return width, height
 
 
 def _place(item, x, y):
@@ -709,6 +747,28 @@ def _layout_board(out):
     left = [s for s in shapes if s.get("side") == "left"]
     right = [s for s in shapes if s.get("side") == "right"]
     center = [s for s in shapes if not s.get("side")]
+    # Recognize a true sequence from its edges. A process should read in
+    # order, rather than being rearranged into an unrelated binary tree.
+    successors = {}
+    incoming = {}
+    ids = {item["id"] for item in shapes}
+    edges = [item for item in out if item["type"] == "arrow" and item.get("startNodeId") in ids and item.get("endNodeId") in ids]
+    for edge in edges:
+        successors.setdefault(edge["startNodeId"], []).append(edge["endNodeId"])
+        incoming[edge["endNodeId"]] = incoming.get(edge["endNodeId"], 0) + 1
+    chain = []
+    roots = [item for item in shapes if not incoming.get(item["id"])]
+    if len(edges) == len(shapes) - 1 and len(roots) == 1 and all(len(next_ids) == 1 for next_ids in successors.values()) and all(count == 1 for count in incoming.values()):
+        by_id = {item["id"]: item for item in shapes}
+        node = roots[0]
+        seen = set()
+        while node and node["id"] not in seen:
+            chain.append(node)
+            seen.add(node["id"])
+            next_ids = successors.get(node["id"], [])
+            node = by_id.get(next_ids[0]) if next_ids else None
+        if len(chain) != len(shapes):
+            chain = []
     if left and right:
         # Comparison columns, then unsided shapes full-width underneath.
         for col, cx in ((left, _TREE_X0), (right, _TREE_X0 + 560)):
@@ -722,6 +782,18 @@ def _layout_board(out):
             y = top + _TREE_GAP_Y
             for item in center:
                 y = _place(item, _TREE_X0, y) + _TREE_GAP_Y
+    elif len(chain) >= 3:
+        y = 40.0
+        for index in range(0, len(chain), 3):
+            row = chain[index:index + 3]
+            sizes = [_node_size(item) for item in row]
+            row_height = max(height for _, height in sizes)
+            row_width = sum(width for width, _ in sizes) + _TREE_GAP_X * (len(row) - 1)
+            x = _TREE_X0 + max(0, (_TREE_W - row_width) / 2)
+            for item, (width, height) in zip(row, sizes):
+                _place(item, x, y + (row_height - height) / 2)
+                x += width + _TREE_GAP_X
+            y += row_height + _TREE_GAP_Y
     elif len(shapes) <= 2:
         # Tiny step: compact left-to-right row.
         x, y, row_h = _TREE_X0, 40.0, 0.0
@@ -745,9 +817,9 @@ def _layout_board(out):
                 _, h1 = _node_size(row[1])
                 row_h = max(h0, h1)
                 for item, cx in zip(row, (_TREE_X0, _TREE_X0 + cell + _TREE_GAP_X)):
-                    _, h = _node_size(item)
-                    item["width"], item["height"] = cell, h
-                    item["x"] = max(-2000, min(2000, cx))
+                    w, h = _node_size(item)
+                    item["width"], item["height"] = (w if item.get("aspectRatio") == 1 else cell), h
+                    item["x"] = max(-2000, min(2000, cx + (cell - item["width"]) / 2))
                     item["y"] = max(-2000, min(2000, y + (row_h - h) / 2))
                 y += row_h + _TREE_GAP_Y
             else:
@@ -854,10 +926,40 @@ def _turn_shift(turn_id: str, out: list[dict]) -> None:
             it["y"] = max(-2000, min(6000, it["y"] + dy))
 
 
+def _safe_image_source(value: object) -> str:
+    src = str(value or "").strip()
+    if not src or len(src) > 2048 or re.search(r"[\s\\<>]", src):
+        return ""
+    if src.startswith("/") and not src.startswith("//"):
+        return src
+    try:
+        url = urlsplit(src)
+        if url.scheme == "https" and url.hostname and not url.username and not url.password:
+            return src
+    except ValueError:
+        pass
+    return ""
+
+
+def _board_code_content(item: dict) -> tuple[str, str] | None:
+    source = str(item.get("code") or item.get("text") or "").strip()
+    fence = re.fullmatch(r"```([\w+#.-]*)[^\S\n]*\n([\s\S]*?)```", source)
+    snippet = fence.group(2).strip() if fence else source
+    code_like = bool(re.match(
+        r"^(?:(?:const|let|var)\s+[\w$]+\s*=|(?:async\s+)?function\s*[\w$]*\s*\([^)]*\)\s*\{|def\s+\w+\s*\([^)]*\)\s*:|(?:console\.(?:log|error)|print)\s*\(|(?:for|while|if)\s*\([^)]*\)\s*\{)", snippet
+    ) or re.fullmatch(r"<[a-z][\s\S]*</[a-z][^>]*>", snippet, re.I))
+    if not (item.get("code") or fence or code_like):
+        return None
+    language = str(item.get("language") or (fence.group(1) if fence else "") or "")
+    if not language:
+        language = "html" if snippet.startswith("<") else "python" if re.match(r"(?:def |print\()", snippet) else "javascript"
+    return snippet, language
+
+
 def normalize(raw: object) -> dict | None:
     if not isinstance(raw, dict) or not isinstance(raw.get("elements"), list):
         return None
-    allowed = {"rectangle", "ellipse", "diamond", "triangle", "text", "arrow", "code", "note", "table", "quiz", "html"}
+    allowed = {"rectangle", "ellipse", "diamond", "triangle", "text", "arrow", "code", "note", "table", "quiz", "html", "image", "scene"}
     elements = []
     seen = set()
     for item in raw["elements"][:DIAGRAM_MAX_ELEMENTS]:
@@ -867,7 +969,13 @@ def normalize(raw: object) -> dict | None:
         # ("type " instead of "type") — strip keys or every element drops.
         item = {str(k).strip(): v for k, v in item.items()}
         item_id = str(item.get("id", "")).strip()[:80]
-        item_type = str(item.get("type", "")).strip()
+        raw_type = str(item.get("type", "")).strip()
+        item_type = {"circle": "ellipse", "square": "rectangle"}.get(raw_type, raw_type)
+        if item_type in {"rectangle", "ellipse", "diamond", "triangle", "text", "note", "code"}:
+            code_content = _board_code_content(item)
+            if code_content:
+                item_type = "code"
+                item = {**item, "code": code_content[0], "language": code_content[1], "text": ""}
         if not item_id or item_id in seen or item_type not in allowed:
             continue
         seen.add(item_id)
@@ -882,7 +990,11 @@ def normalize(raw: object) -> dict | None:
                 normalized[key] = max(40, min(600, float(item.get(key, default))))
             except (TypeError, ValueError):
                 normalized[key] = default
-        if item_type in {"rectangle", "ellipse", "diamond", "triangle", "text", "code", "note", "table", "quiz", "html"}:
+        if item_type in {"rectangle", "ellipse"} and (raw_type in ("circle", "square") or item.get("aspectRatio") == 1):
+            normalized["aspectRatio"] = 1
+            side = max(normalized["width"], normalized["height"])
+            normalized["width"] = normalized["height"] = side
+        if item_type in {"rectangle", "ellipse", "diamond", "triangle", "text", "code", "note", "table", "quiz", "html", "image", "scene"}:
             # Recap notes hold 3 short bullets — roomier cap so takeaways fit.
             cap = 600 if item_type == "code" else (420 if item_type == "note" else DIAGRAM_MAX_TEXT)
             normalized["text"] = _board_text(item.get("text", ""))[:cap]
@@ -901,6 +1013,23 @@ def normalize(raw: object) -> dict | None:
                 if lang:
                     normalized["language"] = lang
             trigger = re.sub(r"[^A-Za-z0-9 ]+", "", str(item.get("trigger", ""))).strip()[:60]
+            if item_type == 'scene':
+                scene = normalize_scene(item)
+                if not scene:
+                    continue
+                normalized.update(scene)
+            if item_type == "image":
+                src = _safe_image_source(item.get("src"))
+                if src:
+                    normalized["src"] = src
+                    normalized["alt"] = _board_text(item.get("alt") or item.get("text") or "Lesson illustration")[:240]
+                    credit = _board_text(item.get("credit"))[:180]
+                    if credit:
+                        normalized["credit"] = credit
+                    normalized.update(normalize_regions(item))
+                    if safe_url(item.get('sourceUrl')):
+                        normalized['sourceUrl'] = safe_url(item['sourceUrl'])
+                    normalized['sceneKey'] = re.sub(r'[^a-zA-Z0-9_-]', '', str(item.get('sceneKey') or ''))[:40]
             if item_type == "html":
                 markup = _sanitize_html(item.get("html", ""))
                 if markup:
@@ -913,8 +1042,10 @@ def normalize(raw: object) -> dict | None:
                 # headers 2-4 cols, rows up to 6, cells short; pad ragged rows.
                 def _cell(v):
                     return _board_text(v)[:60]
-                headers = [_cell(h) for h in (item.get("headers") or []) if _cell(h)][:4]
-                raw_rows = item.get("rows") or []
+                raw_headers = item.get("headers")
+                raw_rows = item.get("rows")
+                headers = [_cell(h) for h in (raw_headers if isinstance(raw_headers, list) else []) if _cell(h)][:4]
+                raw_rows = raw_rows if isinstance(raw_rows, list) else []
                 rows = []
                 for r in raw_rows[:6]:
                     cells = [_cell(c) for c in (list(r) if isinstance(r, (list, tuple)) else [r])]
@@ -958,6 +1089,9 @@ def normalize(raw: object) -> dict | None:
         if item_type == "arrow":
             normalized["startNodeId"] = str(item.get("startNodeId", "")).strip()[:80]
             normalized["endNodeId"] = str(item.get("endNodeId", "")).strip()[:80]
+            label = _board_text(item.get("arrowLabel", ""))[:24]
+            if label:
+                normalized["arrowLabel"] = label
         color = str(item.get("backgroundColor", "")).strip()
         if color == "transparent" or re.fullmatch(r"#[0-9a-fA-F]{6}", color):
             normalized["backgroundColor"] = color
@@ -983,6 +1117,10 @@ def normalize(raw: object) -> dict | None:
             return bool(item.get("headers") or item.get("rows"))
         if item["type"] == "quiz":
             return bool(str(item.get("text", "")).strip() and len(item.get("options") or []) >= 2)
+        if item["type"] == "image":
+            return bool(item.get("src"))
+        if item["type"] == "scene":
+            return True
         if item["type"] == "html":
             return bool(str(item.get("html", "")).strip())
         return bool(str(item.get("text", "")).strip())
@@ -1029,7 +1167,7 @@ def generate(
     if not arguments:
         return None
     try:
-        diagram = normalize(json.loads(arguments))
+        diagram = normalize(resolve_images(json.loads(arguments)))
     except (TypeError, ValueError, json.JSONDecodeError):
         return None
     return diagram if diagram and not stop_evt.is_set() else None

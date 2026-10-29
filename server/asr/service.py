@@ -52,10 +52,11 @@ ASR_MODEL = os.environ.get("ASR_MODEL", "") or "large-v3-turbo"
 # after the second decode) — 2 threads avoids that OpenMP path and is still
 # comfortably realtime for 3-10 s utterances. Raise via .env if you need more.
 ASR_CPU_THREADS = int(os.environ.get("ASR_CPU_THREADS", "2"))
-# Spoken language: "hi" = Hindi/Hinglish, accurate and fast (no detection
-# pass). LEAVE EMPTY only for true multilingual mode — auto-detect is great
-# for English but routinely mislabels SHORT Hindi clips (es/ru/ur/si).
-ASR_LANG = os.environ.get("ASR_LANG", "hi") or None
+# Keep the established Hindi/Hinglish transcription hint by default. This is
+# independent of reply-language classification and the TTS output language.
+# Optional detection aliases must become None, never a literal Whisper code.
+_ASR_LANG_RAW = os.environ.get("ASR_LANG", "hi").strip().lower()
+ASR_LANG = None if _ASR_LANG_RAW in ("", "auto", "detect") else _ASR_LANG_RAW
 ASR_SR = 16000
 # faster-whisper only: the AUTHORITATIVE final after "end" gets a beam-search
 # decode + VAD trimming (better Hinglish accuracy for ~1.5x the cost of one
@@ -83,7 +84,7 @@ ASR_SPECULATIVE = os.environ.get("VOICE_ASR_SPECULATIVE", "1").strip().lower() n
 ASR_SPECULATIVE_MS = int(os.environ.get("VOICE_SPECULATIVE_MS", "5000"))
 ASR_INITIAL_PROMPT = os.environ.get(
     "ASR_INITIAL_PROMPT",
-    "नमस्ते, क्या हाल है? कोडिंग, एआई, कंप्यूटर, प्रोग्रामिंग, ऐप, डेटा, सवाल, जवाब।"
+    "English and Hindi classroom questions. HTML, CSS, JavaScript, Python, DNS. नमस्ते, कोडिंग, सवाल, जवाब।"
 ).strip() or None
 
 # ---------- Server-side neural VAD (Silero) — the noise-immune turn-taker ----------
@@ -385,14 +386,14 @@ class _FasterWhisperAsr:
 
         segs, _info = self._model.transcribe(
             samples,
-            language=ASR_LANG or "hi",
+            language=ASR_LANG,
             task="transcribe",  # Explicitly enforce transcription (never translation into English)
             beam_size=beam,
             temperature=0.0,  # Strictly deterministic: prevents hallucination ladders
             condition_on_previous_text=False,
             vad_filter=True,  # Strip trailing/leading silence so Whisper decodes actual speech
             vad_parameters=dict(min_silence_duration_ms=200),
-            initial_prompt=ASR_INITIAL_PROMPT or "नमस्ते राहुल भाई, आप कैसे हैं? हाँ, मैं पूछ रहा हूँ कि मेरी आवाज़ आपको आ रही है या नहीं?",
+            initial_prompt=ASR_INITIAL_PROMPT,
             no_repeat_ngram_size=max(0, ASR_NO_REPEAT_NGRAM),  # 0 disables (CTranslate2 convention)
         )
         return "".join(s.text for s in segs).strip()

@@ -202,44 +202,15 @@ def make_chat(services):
         http_client = request.app.state.services.runtime.provider_clients.llm()
 
         def _call(messages: list[dict]) -> str:
-            from server.llm.prompts import LLM_SYSTEM_PROMPT  # noqa: F401 (persona lives in prompts)
-
-            payload = {
-                "model": llm_cfg["model"],
-                "messages": messages,
-                "temperature": req.temperature,
-                "max_tokens": cfg.llm_max_tokens,
-            }
-            if llm_cfg["reasoning_effort"] and (
-                "gpt-oss" in llm_cfg["model"] or llm_cfg.get("thinking") is not None
-            ):
-                payload["reasoning_effort"] = llm_cfg["reasoning_effort"]
-            if llm_cfg.get("thinking") is not None:
-                payload["thinking"] = llm_cfg["thinking"]
-            try:
-                r = http_client.post(
-                    llm_cfg["url"],
-                    headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                    json=payload,
-                )
-            except httpx.HTTPError as e:
-                raise HTTPException(status_code=502, detail=f"LLM request failed: {e}") from e
-            if r.status_code != 200:
-                raise HTTPException(status_code=502, detail=f"{llm_cfg['name']} API {r.status_code}: {r.text[:300]}")
-            try:
-                return r.json()["choices"][0]["message"]["content"].strip()
-            except (KeyError, IndexError, ValueError) as e:
-                raise HTTPException(status_code=502, detail=f"Unexpected LLM response: {e}") from e
-
-        from server.llm.prompts import LLM_SYSTEM_PROMPT
+            from server.llm.prompts import LLM_SYSTEM_PROMPT
+        from server.llm.language import classify_language, apply_response_language
+        from server.chat.phrases import speech_sentence
 
         history = [{"role": m.role, "content": m.content} for m in req.messages]
+        language = classify_language(next((m["content"] for m in reversed(history) if m["role"] == "user"), ""), history)
         messages = [{"role": "system", "content": LLM_SYSTEM_PROMPT}, *history]
-        reply = _call(messages)
-        reply = _preserve_code_tokens(reply)
-        reply = _speechify(reply)
-        reply = _naturalize(reply)
-        reply = _devanagari_only(reply)
+        apply_response_language(messages, language)
+        reply = speech_sentence(_call(messages), complete=False, language=language)
         if reply and reply[-1] not in "।?!.":
             cut = max(reply.rfind("।"), reply.rfind("?"), reply.rfind("!"), reply.rfind("."))
             if cut > 0:
@@ -248,7 +219,7 @@ def make_chat(services):
         if GREETING_RE.search(last_user):
             reply = short_greeting(reply, cfg.greeting_max)
         log.info("LLM reply: %s", reply[:80])
-        return {"reply": reply, "model": llm_cfg["model"], "provider": llm_cfg["name"]}
+        return {"reply": reply, "model": llm_cfg["model"], "provider": llm_cfg["name"], "language": language}
 
     return chat
 

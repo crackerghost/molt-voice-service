@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import logging
 import os
 import queue
@@ -91,7 +92,7 @@ def make_ws_tts(services):
                     if mtype == "stop":
                         from server import asr as asr_facade
 
-                        if busy[0] and time.monotonic() - turn_started[0] < asr_facade.STOP_GRACE_S:
+                        if data.get("force") is not True and busy[0] and time.monotonic() - turn_started[0] < asr_facade.STOP_GRACE_S:
                             continue
                         stop_evt.set()
                         continue
@@ -162,26 +163,15 @@ def make_ws_tts(services):
                         need_screen = True
                     system_prompt = LLM_SYSTEM_PROMPT if _LLM_PERSONA_CUSTOM else LLM_SYSTEM_SHORT
                     speaker = data.get("speaker_profile")
+                    name_instruction = ""
                     if isinstance(speaker, dict):
-                        speaker_name = str(speaker.get("name") or "").strip()[:80]
-                        speaker_pronunciation = str(speaker.get("pronunciation") or "").strip()[:80]
-                        if speaker_name:
-                            system_prompt += (
-                                "\n\nSTUDENT NAME: The learner's exact display name is "
-                                + speaker_name
-                                + ". नाम हर जवाब में मत लो। सामान्य जवाब में नाम छोड़ दो।"
-                                + " कभी-कभी ही नाम लेकर बोलो, जैसे बात समझाते समय '"
-                                + speaker_name
-                                + ", ध्यान दो' या जब आवाज़ साफ़ समझ न आई हो तब '"
-                                + speaker_name
-                                + ", ज़रा फिर से बोलो'। एक ही जवाब में नाम एक बार से ज़्यादा मत लो।"
-                            )
-                            if speaker_pronunciation:
-                                system_prompt += (
-                                    " बोलते समय नाम का उच्चारण ऐसे करो: "
-                                    + speaker_pronunciation
-                                    + ". नाम को स्पेल मत करो और 'नाम' शब्द दोहराकर मत बोलो।"
-                                )
+                        pronunciation = str(speaker.get("pronunciation") or "").strip().split()
+                        spoken_name = pronunciation[0][:80] if pronunciation else ""
+                        if spoken_name and re.search(r"[\u0904-\u0939\u0958-\u0961]", spoken_name) and not re.search(r"[A-Za-z]", spoken_name):
+                            name_instruction = "\nSTUDENT SPOKEN NAME: " + spoken_name + ". Use this exact pronunciation occasionally, at most once per answer. Never substitute the English display name or spell the name aloud."
+                        else:
+                            name_instruction = "\nNo verified Hindi name pronunciation is available. Address the learner politely without speaking their English display name."
+                        system_prompt += name_instruction
                     client_code = (data.get("os") or {}).get("code") if isinstance(data.get("os"), dict) else {}
                     practical_allowed = bool(client_code.get("practice_allowed")) if isinstance(client_code, dict) else False
                     coding_context = is_coding_topic(text) or is_coding_topic(history_coding)
@@ -196,7 +186,7 @@ def make_ws_tts(services):
                             system_prompt += (
                                 "\n\nCODING PRACTICAL GATE: Explain the coding concept normally, but do not claim that "
                                 "the editor opened and do not write or request code actions yet. Ask one natural, short "
-                                "follow-up in Hinglish: whether the learner wants you to show it practically in the editor. "
+                                "follow-up in the selected response language: whether the learner wants you to show it practically in the editor. "
                                 "Only a clear yes/haan/show it/करो in a later turn authorizes the editor."
                             )
                     messages = [{"role": "system", "content": system_prompt}, *history]
@@ -281,27 +271,9 @@ def make_ws_tts(services):
                                 )
                                 messages[0] = {"role": "system", "content": _screen_system_prompt(recent)}
 
-                    # Lesson text is sent as a bounded assistant-context message,
-                    # shared from the room's canonical script by each client.
-                    # It stays separate from ordinary chat history so older
-                    # lesson parts are not evicted by follow-up questions.
-                    if data.get("lesson_context") is True:
-                        lesson_context = "\n".join(
-                            str(m.get("content") or "")
-                            for m in history
-                            if isinstance(m, dict)
-                            and m.get("role") == "assistant"
-                            and str(m.get("content") or "").startswith("[LIVE LESSON CONTEXT]")
-                        )[:6200]
-                        if lesson_context:
-                            system_message = messages[0]
-                            messages[0] = {
-                                "role": "system",
-                                "content": str(system_message.get("content") or "")
-                                + "\n\nWhen the conversation includes a [LIVE LESSON CONTEXT] assistant message, use it to connect a related learner question to what the live lecture covered. Explain the connection simply. The current part may still be in progress; do not claim the learner heard all of it. If unrelated, answer normally.",
-                            }
-                            insertion = len(messages) - 1 if messages and messages[-1].get("role") == "user" else len(messages)
-                            messages.insert(insertion, {"role": "assistant", "content": lesson_context})
+                    from server.llm.lesson_context import apply_lesson_context
+
+                    apply_lesson_context(messages, data.get("lesson_context"), history)
 
                     turn_started[0] = time.monotonic()
                     stop_evt.clear()
@@ -391,16 +363,22 @@ def make_ws_tts(services):
                                 "diagram, or ask the learner to look at it, you MUST emit the draw tool call in "
                                 "this response. If you do not call the tool, do not mention or point at the board."
                             )}
+                        from server.llm.language import classify_language, apply_response_language
+                        response_language = classify_language(text, history)
+                        if name_instruction and name_instruction not in messages[0]["content"]:
+                            messages[0]["content"] += name_instruction
+                        apply_response_language(messages, response_language)
+                        log.info("Classroom response language: %s", response_language)
                         threading.Thread(
                             target=chat_worker,
                             args=(pipeline, key, messages, temperature, num_step, speed, out_q, stop_evt, start,
                                   llm_client, diagram_ctx, llm_cfg, os_ctx),
                             kwargs={"provider_clients": services.runtime.provider_clients,
-                                    "inline_board": inline_board},
+                                    "inline_board": inline_board, "response_language": response_language},
                             daemon=True,
                         ).start()
 
-                        await websocket.send_text(json.dumps({"type": "start", "sample_rate": cfg.sample_rate, "text": text,
+                        await websocket.send_text(json.dumps({"type": "start", "sample_rate": cfg.sample_rate, "text": text, "response_language": response_language,
                                                               "turn_id": turn_id, "client_turn_id": client_turn_id}))
                         frames = 0
                         board_announced = False
@@ -436,7 +414,8 @@ def make_ws_tts(services):
                         # Falls back to random on timeout/failure.
                         filler_pick_future = None
                         if (
-                            getattr(cfg, "filler_pick_enabled", True)
+                            response_language != "en"
+                            and getattr(cfg, "filler_pick_enabled", True)
                             and getattr(cfg, "filler_enabled", True)
                             and filler_mode != "off"
                             and filler_store
@@ -463,7 +442,7 @@ def make_ws_tts(services):
                                 filler_pick_future = None
 
                         async def _send_filler() -> bool:
-                            if stop_evt.is_set():
+                            if response_language == "en" or stop_evt.is_set():
                                 return False
                             clip = None
                             if filler_pick_future is not None:

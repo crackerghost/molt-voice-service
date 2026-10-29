@@ -63,12 +63,22 @@ def convert_numbers_to_hindi(text: str) -> str:
     return re.sub(r"(?<![A-Za-z])\d+", _repl, text)
 
 
-def speech_sentence(sent: str, complete: bool = True) -> str:
+def speech_sentence(sent: str, complete: bool = True, language: str = "hi") -> str:
     """Make one streamed phrase speakable (strip markup, convert numbers, Devanagari accent).
 
     complete=False leaves off the terminal danda/full-stop so a phrase that was
     flushed early (mid-sentence) doesn't get an artificial full stop.
     """
+    if language == "en":
+        sent = re.sub(r"```[\s\S]*?```", " ", sent or "")
+        sent = re.sub(r"</?\s*([A-Za-z][A-Za-z0-9]*)(?:\s[^<>]*)?>", r" \1 tag ", sent)
+        sent = re.sub(r"[<>]", " ", sent).replace("&", " and ").replace("+", " plus ")
+        sent = re.sub(r"[\*_`#]+", "", sent)
+        sent = re.sub(r"^\s*(?:[-•]|\d+[.)])\s*", "", sent, flags=re.M)
+        sent = re.sub(r"[\U0001F000-\U0001FAFF\u2600-\u27BF\uFE0F]+", " ", sent)
+        sent = re.sub(r"\s+", " ", sent).strip()
+        if sent and complete and sent[-1] not in ".?!": sent += "."
+        return sent
     sent = _preserve_code_tokens(sent)
     sent = _speechify(sent)
     sent = _naturalize(sent)
@@ -99,7 +109,7 @@ def clause_units(sent: str, piece_max: int = 110) -> list[str]:
     realtime feel — one giant run-on sentence used to stall TTS for 10s+).
     """
     # Cut at sentence enders FIRST — each sentence is spoken separately.
-    sentences = [s.strip() for s in re.split(r"(?<=[।?!.\\n])\s*", sent) if s.strip()]
+    sentences = [s.strip() for s in re.split(r"(?<=[।?!.\n])\s*", sent) if s.strip()]
     if not sentences:
         return []
     out: list[str] = []
